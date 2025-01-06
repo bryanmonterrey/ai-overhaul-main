@@ -29,10 +29,10 @@ class MemoryProcessor:
     def __init__(self, agent: 'Agent'):
         self.agent = agent
 
-        supabase_client = self.agent.service.supabase
+        self.supabase_client = self.agent.service.supabase
         
         # Initialize memory system
-        self.memory_system = init_memory_system(supabase_client)
+        self.memory_system = init_memory_system(self.supabase_client)
         self.vector_store = self.memory_system['vector_store']
         self.hierarchy = self.memory_system['hierarchy']
         self.retrieval = self.memory_system['retrieval']
@@ -563,7 +563,7 @@ class MemoryProcessor:
         """Store a memory directly"""
         try:
             # Store in database
-            response = await self.agent.supabase.table('memories')\
+            response = await self.supabase_client.table('memories')\
                 .insert(memory_data)\
                 .execute()
 
@@ -612,7 +612,7 @@ class MemoryProcessor:
             
             # Optimize storage
             for memory_type in ['chat_history', 'tweet_history']:
-                response = await self.agent.supabase.table('memories')\
+                response = await self.supabase_client.table('memories')\
                     .select('*')\
                     .eq('type', memory_type)\
                     .execute()
@@ -625,7 +625,7 @@ class MemoryProcessor:
                     
                     # Archive memories not in optimized set
                     memory_ids = {m['id'] for m in optimized}
-                    await self.agent.supabase.table('memories')\
+                    await self.supabase_client.table('memories')\
                         .update({'archive_status': 'archived'})\
                         .not_.in_('id', list(memory_ids))\
                         .eq('type', memory_type)\
@@ -681,7 +681,7 @@ class MemoryProcessor:
             
             # Store in database
             try:
-                response = await self.agent.supabase.table('memories')\
+                response = await self.supabase_client.table('memories')\
                     .insert(memory_data)\
                     .execute()
                 print(f"Response: {response}")
@@ -762,7 +762,7 @@ class MemoryProcessor:
     ) -> List[Dict[str, Any]]:
         """Query memories by type with optional filters"""
         try:
-            query = self.agent.supabase.table('memories')\
+            query = self.supabase_client.table('memories')\
                 .select('*')\
                 .eq('type', memory_type)\
                 .eq('archive_status', 'active')
