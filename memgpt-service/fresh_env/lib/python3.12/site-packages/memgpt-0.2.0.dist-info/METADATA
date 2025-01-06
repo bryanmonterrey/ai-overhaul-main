@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: memgpt
+Version: 0.2.0
+Summary: This package contains the code for training a memory-augmented GPT model on patient data. Please note that this is not the 'letta' company project with thehttps://github.com/letta-ai/letta; for use of their package, plsuse 'pymemgpt' instead.
+Home-page: UNKNOWN
+Author: Norwegian Brain Initiative
+License: UNKNOWN
+Platform: UNKNOWN
+Requires-Python: >=3.6
+License-File: LICENSE
+
+UNKNOWN
+

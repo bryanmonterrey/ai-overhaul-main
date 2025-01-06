@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+python-dotenv
+supabase
+memgpt
+dspy-ai
+openai>=1.0.0
+anthropic>=0.3.0
+pydantic
+python-frontmatter
+faiss-cpu
+networkx
+solana
+solana-sdk
+solders
+base58
