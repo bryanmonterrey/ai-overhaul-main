@@ -562,17 +562,17 @@ class MemoryProcessor:
             return []
         
     async def store_memory(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Store a memory directly"""
+    """Store a memory directly"""
         try:
-             # Ensure key exists
+            # Ensure key exists
             if 'key' not in memory_data:
                 memory_data['key'] = str(uuid.uuid4())
+                
             # Store in database
-            response = await self.supabase_client.table('memories')\
-                .insert(memory_data)\
-                .execute()
+            insert_query = self.supabase_client.table('memories').insert(memory_data)
+            response = await insert_query.execute()
 
-            if not response.data:
+            if not response or not hasattr(response, 'data') or not response.data:
                 raise ValueError("Failed to store memory")
 
             memory_id = response.data[0]['id']
@@ -581,10 +581,19 @@ class MemoryProcessor:
             if 'content' in memory_data:
                 analysis = await self.analyze_content(memory_data['content'])
                 if 'vector_embedding' in analysis:
-                    await self.vector_store.store_vector(
-                        memory_id,
-                        np.array(analysis['vector_embedding'])
-                    )
+                    # Create a separate insert for vector embedding
+                    vector_data = {
+                        'memory_id': memory_id,
+                        'embedding': np.array(analysis['vector_embedding']).tolist(),
+                        'created_at': datetime.now().isoformat()
+                    }
+                    
+                    vector_response = await self.supabase_client.table('memory_embeddings')\
+                        .insert(vector_data)\
+                        .execute()
+                        
+                    if not vector_response or not hasattr(vector_response, 'data'):
+                        self.logger.warning("Failed to store vector embedding")
 
             return {
                 'success': True,
