@@ -691,33 +691,32 @@ class MemoryProcessor:
             try:
                 print(self.supabase_client)
                 # Create the query
-                insert_query = self.supabase_client.table("memories").insert(memory_data)
-                # Execute the query
-                response = await insert_query.execute()
-                print(f"Response: {response}")
-            
-                if not response or not hasattr(response, 'data') or not response.data:
+                query = self.supabase_client.table("memories").insert(memory_data)
+                # Execute and get response
+                insert_response = await query.execute()
+
+                if not hasattr(insert_response, 'data') or not insert_response.data:
                     raise ValueError("No data returned from memory storage")
                     
-                stored_memory = response.data[0]
-                print(f"stored_memory: {stored_memory}")
-
+                stored_memory = insert_response.data[0]
                 memory_id = stored_memory['id']
                 print(f"memory_id: {memory_id}")
                 
                 # Store vector embedding
                 if 'vector_embedding' in analysis:
                     try:
-                        # Convert embedding to numpy array
                         vector_embedding = np.array(analysis['vector_embedding'])
+                        vector_data = {
+                            'memory_id': memory_id,
+                            'embedding': vector_embedding.tolist(),
+                            'created_at': datetime.now().isoformat()
+                        }
                         
-                        # Store the vector
-                        vector_stored = await self.vector_store.store_vector(
-                            memory_id,
-                            vector_embedding
-                        )
+                        # Create and execute vector storage query
+                        vector_query = self.supabase_client.table('memory_embeddings').insert(vector_data)
+                        vector_response = await vector_query.execute()
                         
-                        if not vector_stored:
+                        if not hasattr(vector_response, 'data') or not vector_response.data:
                             self.logger.warning("Failed to store vector embedding")
                             
                     except Exception as ve:
@@ -744,7 +743,8 @@ class MemoryProcessor:
                     **metadata,
                     'id': memory_id,
                     'analysis': analysis,
-                    'success': True
+                    'success': True,
+                    'stored_memory': stored_memory
                 }
                 
             except Exception as db_error:
