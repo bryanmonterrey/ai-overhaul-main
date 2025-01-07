@@ -663,24 +663,25 @@ class MemoryProcessor:
                     compressed_content = content_str
             metadata = metadata or {}
             print(f"metadata",metadata)
-            memory_key = str(uuid.uuid4()) 
+            memory_id = str(uuid.uuid4()) 
             # Analyze content
             analysis = await self.analyze_content(content_str)
             
             # Prepare memory data
             memory_data = {
-                'key': memory_key,
-                'type': metadata.get('type', 'general'),
+                "id": memory_id,
+                "key": str(uuid.uuid4()),
+                "type": metadata.get("type", "general"),
                 'content': compressed_content,
                 'metadata': {
                     **metadata,
                     'analysis_version': '2.0',
                     'processing_date': datetime.now().isoformat()
                 },
-                'importance': analysis['importance'],
+                "importance": float(analysis.get("importance", 0.5)),
                 'emotional_context': analysis['emotional_context'],
                 'created_at': datetime.now().isoformat(),
-                'complexity': analysis.get('complexity', 0),
+                "complexity": float(analysis.get("complexity", 0)),
                 'platform': metadata.get('platform', 'default'),
                 'archive_status': 'active'
             }
@@ -689,10 +690,10 @@ class MemoryProcessor:
             # Store in database
             try:
                 print(self.supabase_client)
-                response = await self.supabase_client.table("memories").insert(memory_data).execute()
+                response = self.supabase_client.table("memories").insert(memory_data).execute()
                 print(f"Response: {response}")
             
-                if not response.data:
+                if not response or not response.data:
                     raise ValueError("No data returned from memory storage")
                 stored_memory = response.data[0]
                 print(f"stored_memory: {stored_memory}")
