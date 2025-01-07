@@ -561,54 +561,15 @@ class MemoryProcessor:
             self.logger.error(f"Error processing memories: {str(e)}")
             return []
         
-    async def store_memory(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Store a memory directly"""
+    def store_memory(self, memory_data):
+        """Store a memory directly"""
         try:
-            # Ensure key exists
-            if 'key' not in memory_data:
-                memory_data['key'] = str(uuid.uuid4())
-                
-            # Store in database
-            insert_query = self.supabase_client.table('memories').insert(memory_data)
-            response = await insert_query.execute()
-
-            if not response or not hasattr(response, 'data') or not response.data:
-                raise ValueError("Failed to store memory")
-
-            memory_id = response.data[0]['id']
-
-            # If there's content, create and store vector embedding
-            if 'content' in memory_data:
-                analysis = await self.analyze_content(memory_data['content'])
-                if 'vector_embedding' in analysis:
-                    # Create a separate insert for vector embedding
-                    vector_data = {
-                        'memory_id': memory_id,
-                        'embedding': np.array(analysis['vector_embedding']).tolist(),
-                        'created_at': datetime.now().isoformat()
-                    }
-                    
-                    vector_response = await self.supabase_client.table('memory_embeddings')\
-                        .insert(vector_data)\
-                        .execute()
-                        
-                    if not vector_response or not hasattr(vector_response, 'data'):
-                        self.logger.warning("Failed to store vector embedding")
-
-            return {
-                'success': True,
-                'data': {
-                    **response.data[0],
-                    'id': memory_id
-                }
-            }
-
+            # Store the memory in your storage system
+            self.memory_store.add(memory_data)
+            return True
         except Exception as e:
-            self.logger.error(f"Error storing memory: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            print(f"Error storing memory: {e}")
+            return False
 
     async def maintain_memory_system(self):
         """Periodic maintenance of the memory system"""
@@ -670,9 +631,11 @@ class MemoryProcessor:
                 except Exception as e:
                     self.logger.error(f"Error compressing memory content: {str(e)}")
                     compressed_content = content_str
+
             metadata = metadata or {}
-            print(f"metadata",metadata)
+            print(f"metadata", metadata)
             memory_id = str(uuid.uuid4()) 
+            
             # Analyze content
             analysis = await self.analyze_content(content_str)
             
@@ -688,35 +651,47 @@ class MemoryProcessor:
                     'processing_date': datetime.now().isoformat()
                 },
                 "importance": float(analysis.get("importance", 0.5)),
-                'emotional_context': analysis['emotional_context'],
+                'emotional_context': analysis.get('emotional_context', 'neutral'),
                 'created_at': datetime.now().isoformat(),
                 "complexity": float(analysis.get("complexity", 0)),
                 'platform': metadata.get('platform', 'default'),
                 'archive_status': 'active'
             }
-            print(f"memory_data",memory_data)
+            print(f"memory_data", memory_data)
             
             # Store in database
             try:
                 print(self.supabase_client)
-                response = self.supabase_client.table("memories").insert(memory_data).execute()
+                # Create the query
+                insert_query = self.supabase_client.table("memories").insert(memory_data)
+                # Execute the query
+                response = await insert_query.execute()
                 print(f"Response: {response}")
             
-                if not response or not response.data:
+                if not response or not hasattr(response, 'data') or not response.data:
                     raise ValueError("No data returned from memory storage")
+                    
                 stored_memory = response.data[0]
                 print(f"stored_memory: {stored_memory}")
 
-                memory_id = response.data[0]['id']
+                memory_id = stored_memory['id']
                 print(f"memory_id: {memory_id}")
                 
                 # Store vector embedding
                 if 'vector_embedding' in analysis:
                     try:
-                        await self.vector_store.store_vector(
+                        # Convert embedding to numpy array
+                        vector_embedding = np.array(analysis['vector_embedding'])
+                        
+                        # Store the vector
+                        vector_stored = await self.vector_store.store_vector(
                             memory_id,
-                            np.array(analysis['vector_embedding'])
+                            vector_embedding
                         )
+                        
+                        if not vector_stored:
+                            self.logger.warning("Failed to store vector embedding")
+                            
                     except Exception as ve:
                         self.logger.warning(f"Failed to store vector embedding: {ve}")
                 
@@ -727,12 +702,12 @@ class MemoryProcessor:
                         []  # Let the system find candidates
                     )
                     
-                    if similar and 'id' in similar:
+                    if similar and isinstance(similar, dict) and 'id' in similar:
                         await self.hierarchy.add_memory_relationship(
                             similar['id'],
                             memory_id,
                             'semantic',
-                            similar.get('similarity', 0.5)
+                            float(similar.get('similarity', 0.5))
                         )
                 except Exception as hierarchy_error:
                     self.logger.warning(f"Failed to establish memory relationships: {hierarchy_error}")
@@ -740,16 +715,23 @@ class MemoryProcessor:
                 return {
                     **metadata,
                     'id': memory_id,
-                    'analysis': analysis
+                    'analysis': analysis,
+                    'success': True
                 }
                 
             except Exception as db_error:
                 self.logger.error(f"Database operation failed: {db_error}")
-                return None
+                return {
+                    'success': False,
+                    'error': str(db_error)
+                }
 
         except Exception as e:
             self.logger.error(f"Error processing new memory: {str(e)}")
-            return None
+            return {
+                'success': False,
+                'error': str(e)
+            }
 
     @staticmethod
     def get_memory_config() -> Dict[str, Any]:

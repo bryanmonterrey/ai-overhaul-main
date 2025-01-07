@@ -32,20 +32,23 @@ class VectorStore:
     async def store_vector(self, memory_id: str, embedding: np.ndarray) -> bool:
         """Store vector embedding in database"""
         try:
-            # Convert response to a proper dict/list before manipulation
-            supabase_data = {
+            # Prepare the data
+            insert_data = {
                 'memory_id': memory_id,
                 'embedding': embedding.tolist(),
                 'created_at': datetime.now().isoformat()
             }
             
-            response = self.supabase.table('memory_embeddings').insert(supabase_data)
-            result = await response.execute()
+            # Create the query
+            query = self.supabase.table('memory_embeddings').insert(insert_data)
             
-            if not hasattr(result, 'data') or not result.data:
+            # Execute the query
+            response = await query.execute()
+            
+            if not hasattr(response, 'data') or not response.data:
                 logging.error("No data returned from Supabase")
                 return False
-            
+                
             # Update FAISS index
             try:
                 reshaped = embedding.reshape(1, -1)
@@ -157,6 +160,28 @@ class VectorStore:
             self.last_sync = datetime.now()
         except Exception as e:
             logging.error(f"Sync error: {str(e)}")
+
+    async def retrieve_vector(self, memory_id: str) -> Optional[np.ndarray]:
+        """Retrieve vector for a memory"""
+        try:
+            query = self.supabase.table('memory_embeddings')\
+                .select('embedding')\
+                .eq('memory_id', memory_id)\
+                .single()
+            response = await query.execute()
+                
+            if not hasattr(response, 'data') or not response.data:
+                return None
+                
+            embedding_data = response.data.get('embedding')
+            if embedding_data:
+                return np.array(embedding_data)
+                
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error retrieving vector: {str(e)}")
+            return None
 
     async def delete_vectors(self, memory_ids: List[str]):
         """Delete vectors from storage"""
