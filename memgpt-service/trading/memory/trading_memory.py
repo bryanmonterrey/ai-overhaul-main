@@ -35,30 +35,38 @@ class TradingMemory:
         self.strategy_history: List[Dict[str, Any]] = []
         self.realtime_monitor = None
 
-    async def store_interaction(
-    self,
-    content: str,
-    response: Dict[str, Any],
-    metadata: Dict[str, Any]
-):
-        """Store trading interaction in memory"""
+    async def store_interaction(self, message: str, response: Dict[str, Any]):
         try:
-            if isinstance(content, str):
-                processed_content = content
-            else:
-                processed_content = json.dumps(content)
-
-            await self.memory_processor.process_new_memory(
-                content=processed_content,
-                metadata={
-                    **metadata,
-                    "type": "trading_interaction",
-                    "response": response
-                }
-            )
+            metadata = {
+                'response': response,
+                'type': 'trading_chat',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Create the memory object
+            memory_data = {
+                'content': message if isinstance(message, str) else json.dumps(message),
+                'metadata': metadata,
+                'type': 'trading_chat',
+                'created_at': datetime.now().isoformat()
+            }
+            
+            try:
+                result = await self.memory_processor.process_new_memory(memory_data)
+                
+                if isinstance(result, dict) and not result.get('success'):
+                    logging.error(f"Memory storage failed: {result.get('error')}")
+                    return None
+                    
+                return result.get('id') if isinstance(result, dict) else None
+                
+            except Exception as process_error:
+                logging.error(f"Memory processing error: {str(process_error)}")
+                return None
+                
         except Exception as e:
             logging.error(f"Error storing interaction: {str(e)}")
-            raise
+            return None
 
     async def get_relevant_context(
         self,
@@ -104,36 +112,46 @@ class TradingMemory:
             trade_memory = {
                 "type": "trading_history",
                 "content": {
-                    "trade_type": trade_result["type"],
-                    "token_in": trade_result["tokenIn"],
-                    "token_out": trade_result["tokenOut"],
-                    "amount_in": str(trade_result["amountIn"]),
-                    "amount_out": str(trade_result["amountOut"]),
+                    "trade_type": trade_result.get("type", "trade_execution"),
+                    "tokenIn": trade_result.get("tokenIn", trade_result.get("token_in")),
+                    "tokenOut": trade_result.get("tokenOut", trade_result.get("token_out")),
+                    "amountIn": str(trade_result.get("amountIn", trade_result.get("amount_in", "0"))),
+                    "amountOut": str(trade_result.get("amountOut", trade_result.get("amount_out", "0"))),
                     "timestamp": datetime.now().isoformat(),
-                    "tx_hash": trade_result.get("txHash"),
-                    "status": trade_result["status"],
-                    "price_impact": trade_result.get("priceImpact", 0),
-                    "route_info": trade_result.get("routeInfo", {}),
+                    "txHash": trade_result.get("txHash", trade_result.get("tx_hash")),
+                    "status": trade_result.get("status", "pending"),
+                    "priceImpact": trade_result.get("priceImpact", 0),
+                    "routeInfo": trade_result.get("routeInfo", {})
                 },
                 "metadata": {
-                    "importance": 0.8,  # High importance for trades
+                    "importance": 0.8,
                     "category": "trade_execution",
                     "strategy": trade_result.get("strategy"),
                     "risk_metrics": await self._calculate_trade_risk_metrics(trade_result)
                 }
             }
 
-             # Process memory - key changes here
-            memory_content = json.dumps(trade_memory["content"])
-            result = await self.memory_processor.process_new_memory(
-                content=memory_content,
-                metadata=trade_memory["metadata"]
-            )
+            try:
+                memory_content = json.dumps(trade_memory["content"])
+                memory_data = {
+                    'content': memory_content,
+                    'metadata': trade_memory["metadata"],
+                    'type': trade_memory["type"],
+                    'created_at': datetime.now().isoformat()
+                }
+                
+                result = await self.memory_processor.process_new_memory(memory_data)
 
-            return result.get('id') if result else None
+                if isinstance(result, dict):
+                    return result.get('id')
+                return None
+
+            except Exception as process_error:
+                logging.error(f"Memory processing error: {str(process_error)}")
+                return None
 
         except Exception as e:
-            print(f"Error storing trade execution: {str(e)}")
+            logging.error(f"Error storing trade execution: {str(e)}")
             return None
 
     async def store_strategy_update(self, strategy_update: Dict[str, Any]) -> str:
