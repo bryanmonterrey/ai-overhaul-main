@@ -127,7 +127,7 @@ class MemoryRetrieval:
         """Time-based search with relevance decay"""
         try:
             # Use the search_memories function we created
-            response = await self.supabase.rpc(
+            response = self.supabase.rpc(
                 'search_memories',
                 {
                     'search_query': query,
@@ -300,7 +300,7 @@ class MemoryRetrieval:
     ) -> Optional[SearchResult]:
         """Get memory and apply context-based score boosting"""
         try:
-            response = await self.supabase.table('memories')\
+            response = self.supabase.table('memories')\
                 .select('*')\
                 .eq('id', memory_id)\
                 .single()\
@@ -397,7 +397,7 @@ class MemoryRetrieval:
                 current_ids = [r.memory_id for r in expanded_results]
                 
                 # Get related memories
-                response = await self.supabase.rpc(
+                response = self.supabase.rpc(
                     'get_related_memories',
                     {'memory_ids': current_ids}
                 ).execute()

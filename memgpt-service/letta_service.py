@@ -259,7 +259,7 @@ class MemGPTService:
                 raise
 
             # Initialize trading components
-            self.trading_memory = TradingMemory(self.memory_processor)
+            self.trading_memory = TradingMemory(self.supabase)
             self.trading_memory.set_realtime_monitor(self.realtime_monitor)
             print("Trading memory initialized")
 
@@ -417,11 +417,16 @@ class MemGPTService:
                 # If we still need more memories, use both systems for search
                 if len(memory_chain) < depth:
                     # Original semantic search
-                    agent_results = await self.agent.memory.search(
-                        query=content,
-                        limit=(depth - len(memory_chain)) * 2
-                    )
-                    
+                    agent_results = self.supabase.table('memories')\
+                        .select('*')\
+                        .eq('id', memory_key)\
+                        .execute()
+                        
+                    # Use helper function
+                    data = handle_supabase_response(agent_results)
+                    if not data:
+                        return {"success": False, "error": "Memory not found"}
+
                     # DSPy semantic search (run in parallel)
                     dspy_results = await self.dspy_service.find_related(
                         source_content=content,

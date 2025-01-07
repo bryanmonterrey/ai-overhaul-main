@@ -561,43 +561,10 @@ class MemoryProcessor:
             self.logger.error(f"Error processing memories: {str(e)}")
             return []
         
-    async def store_memory(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Store a memory directly"""
-        try:
-            # Create insert query
-            query = self.supabase_client.table("memories").insert(memory_data)
-            
-            # Execute the query and properly await it
-            try:
-                response = await query.execute()
-                
-                if not response or not hasattr(response, 'data') or not response.data:
-                    return {
-                        'success': False,
-                        'error': 'No data returned from storage'
-                    }
-                    
-                stored_memory = response.data[0]
-                memory_id = stored_memory['id']
-                
-                return {
-                    'success': True,
-                    'memory_id': memory_id,
-                    'data': stored_memory
-                }
-                
-            except Exception as insert_error:
-                return {
-                    'success': False,
-                    'error': f"Insert error: {str(insert_error)}"
-                }
-                
-        except Exception as e:
-            self.logger.error(f"Error storing memory: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+    async def store_memory(self, memory_data: Dict[str, Any]):
+        response = self.supabase_client.table("memories")\
+            .insert(memory_data)\
+            .execute()
 
     async def maintain_memory_system(self):
         """Periodic maintenance of the memory system"""

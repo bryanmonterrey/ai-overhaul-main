@@ -67,7 +67,7 @@ class MemoryHierarchy:
                 visited.add(node_id)
                 
                 # Get node data
-                response = await self.supabase.table('memories')\
+                response = self.supabase.table('memories')\
                     .select('*')\
                     .eq('id', node_id)\
                     .single()\
@@ -78,7 +78,7 @@ class MemoryHierarchy:
                     return None
                     
                 # Get children
-                children_response = await self.supabase.table('memory_hierarchies')\
+                children_response = self.supabase.table('memory_hierarchies')\
                     .select('child_memory_id, hierarchy_type, relevance_score')\
                     .eq('parent_memory_id', node_id)\
                     .gte('relevance_score', min_relevance)\
@@ -144,7 +144,7 @@ class MemoryHierarchy:
         """Consolidate similar memories in hierarchy"""
         try:
             # Get all memories without parents
-            response = await self.supabase.rpc(
+            response = self.supabase.rpc(
                 'get_root_memories',
                 {'threshold': threshold}
             ).execute()
@@ -153,7 +153,7 @@ class MemoryHierarchy:
                 return
                 
             for memory in response.data:
-                similar_memories = await self.supabase.rpc(
+                similar_memories = self.supabase.rpc(
                     'find_similar_memories',
                     {
                         'memory_id': memory['id'],

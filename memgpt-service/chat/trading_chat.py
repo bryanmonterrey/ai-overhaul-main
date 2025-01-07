@@ -5,6 +5,7 @@ from enum import Enum
 import os
 import json
 import logging
+import uuid
 logging.basicConfig(level=logging.INFO)
 
 class CommandType(Enum):
@@ -166,23 +167,30 @@ class TradingChat:
                 }
 
             # Handle confirmation - use last trade parameters
-            if command_type == "confirm" and self.last_trade:
+            if (command_type == "confirm" or 
+                (command_type == "trade" and not analysis.get("parameters"))) and self.last_trade:
+                print("Using last trade parameters:", self.last_trade)
                 analysis["parameters"] = {
                     **self.last_trade,
                     "wallet": wallet_info  # Add wallet info to confirmation
                 }
                 command_type = "trade"
-            else:
-                # Add wallet info to parameters if provided
-                if wallet_info:
-                    print("Adding wallet info to parameters:", wallet_info)
-                    analysis["parameters"] = {
-                        **(analysis.get("parameters", {})),
-                        "wallet": wallet_info
-                    }
+            elif command_type == "confirm" and not self.last_trade:
+                return {
+                    "response": "No previous trade found to confirm. Please specify the trade details first.",
+                    "error": "No trade to confirm"
+                }
+
+            # Add wallet info to parameters if provided
+            if wallet_info:
+                print("Adding wallet info to parameters:", wallet_info)
+                analysis["parameters"] = {
+                    **(analysis.get("parameters", {})),
+                    "wallet": wallet_info
+                }
 
             # Store trade parameters for future confirmation
-            if command_type == "trade" and not command_type == "confirm":
+            if command_type == "trade" and analysis.get("parameters"):
                 self.last_trade = {
                     k: v for k, v in analysis["parameters"].items() 
                     if k != "wallet"  # Don't store wallet info in last_trade
@@ -206,24 +214,10 @@ class TradingChat:
             )
             print("Handler result:", result)
 
-            # Store interaction in memory
-            await self.memory.store_interaction(
-                content=message,
-                response=result,
-                metadata={
-                    "type": "admin_trading_chat",
-                    "command": analysis["command_type"],
-                    "timestamp": datetime.now().isoformat()
-                }
-            )
-            
-            # Combine the natural response with the result
-            final_response = {
+            return {
                 "response": analysis.get("natural_response", str(result)),
                 "data": result
             }
-            
-            return final_response
 
         except Exception as e:
             print("Error in process_admin_message:", str(e))
@@ -556,7 +550,7 @@ class TradingChat:
                 'timestamp': datetime.now().isoformat()
             }
             
-            result = await self.memory_processor.process_new_memory(message, metadata)
+            result = self.memory_processor.process_new_memory(message, metadata)
             if not result:
                 logging.error("Failed to store interaction in memory")
                 
@@ -568,7 +562,7 @@ class TradingChat:
         """Get relevant trading context from memory"""
         try:
             # Query recent trading memories
-            memories = await self.memory_processor.query_memories(
+            memories = self.memory_processor.query_memories(
                 memory_type="trading_history",
                 limit=10
             )

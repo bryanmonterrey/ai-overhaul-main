@@ -63,7 +63,7 @@ class VectorStore:
     async def get_vectors(self, memory_ids: List[str]) -> Dict[str, np.ndarray]:
         """Retrieve vectors for given memory IDs"""
         try:
-            response = await self.supabase.table('memory_embeddings')\
+            response = self.supabase.table('memory_embeddings')\
                 .select('memory_id, embedding')\
                 .in_('memory_id', memory_ids)\
                 .execute()
@@ -134,7 +134,7 @@ class VectorStore:
         """Sync FAISS index with database"""
         try:
             # Get all embeddings
-            response = await self.supabase.table('memory_embeddings')\
+            response = self.supabase.table('memory_embeddings')\
                 .select('memory_id, embedding, created_at')\
                 .execute()
             
@@ -163,7 +163,7 @@ class VectorStore:
     async def retrieve_vector(self, memory_id: str) -> Optional[np.ndarray]:
         """Retrieve vector for a memory"""
         try:
-            response = await self.supabase.table('memory_embeddings')\
+            response = self.supabase.table('memory_embeddings')\
                 .select('embedding')\
                 .eq('memory_id', memory_id)\
                 .single()\
@@ -186,7 +186,7 @@ class VectorStore:
     async def delete_vectors(self, memory_ids: List[str]):
         """Delete vectors from storage"""
         try:
-            await self.supabase.table('memory_embeddings')\
+            self.supabase.table('memory_embeddings')\
                 .delete()\
                 .in_('memory_id', memory_ids)\
                 .execute()

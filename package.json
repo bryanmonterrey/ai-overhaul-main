@@ -95,6 +95,7 @@
     "tailwindcss-animate": "^1.0.7",
     "telegraf": "^4.16.3",
     "tsconfig-paths": "^4.2.0",
+    "tweetnacl": "^1.0.3",
     "twitter-api-v2": "^1.18.2",
     "typescript": "5.0.4",
     "uuid": "^11.0.3",

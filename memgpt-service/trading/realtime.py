@@ -377,14 +377,16 @@ class RealTimeMonitor:
     async def store_trade_execution(self, data: dict) -> None:
         try:
             if isinstance(data, str):
-                data = json.loads(data)  # Convert string to dict if needed
+                data = json.loads(data)
                 
             execution_data = {
                 **data,
                 'timestamp': datetime.now().isoformat()
             }
-            # Fix: Properly handle the Supabase response
-            response = await self.supabase.table('trade_executions').insert(execution_data).execute()
+            # Remove await and use execute() directly
+            response = self.supabase.table('trade_executions')\
+                .insert(execution_data)\
+                .execute()
             
             if hasattr(response, 'error') and response.error:
                 logging.error(f"Supabase insert error: {response.error}")
@@ -394,7 +396,7 @@ class RealTimeMonitor:
             
         except Exception as e:
             logging.error(f"Error storing trade execution: {str(e)}")
-            raise  # Re-raise the exception to handle it at a higher level
+            raise
 
     async def _send_trade_error(self, trade_id: str, error: str):
         """Send trade error update via WebSocket"""
@@ -412,8 +414,8 @@ class RealTimeMonitor:
     async def handle_trade_update(self, tx_signature: str, status: str):
         """Handle trade status updates from frontend"""
         try:
-            # Find trade intent
-            response = await self.supabase.table('trade_intents')\
+            # Remove await
+            response = self.supabase.table('trade_intents')\
                 .select('*')\
                 .eq('status', 'pending')\
                 .order('timestamp', desc=True)\
@@ -424,7 +426,6 @@ class RealTimeMonitor:
                 trade_intent = response.data[0]
                 trade_id = trade_intent['id']
 
-                # Update status
                 await self.broadcast_trading_update(
                     update_type="trade_status",
                     data={
@@ -436,8 +437,8 @@ class RealTimeMonitor:
                     channel="trading_updates"
                 )
 
-                # Update in database
-                await self.supabase.table('trade_intents')\
+                # Remove await
+                self.supabase.table('trade_intents')\
                     .update({'status': status, 'tx_signature': tx_signature})\
                     .eq('id', trade_id)\
                     .execute()

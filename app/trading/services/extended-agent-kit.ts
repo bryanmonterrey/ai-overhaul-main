@@ -39,25 +39,103 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
 }
 
     // Session management
-    async initSession(params: { wallet: { publicKey: string; sessionProof?: string; } }): Promise<SessionResponse> {
-      if (this.isReadonly) {
-        // Generate deterministic signature for readonly mode
-        const message = new TextEncoder().encode(`readonly-session-${params.wallet.publicKey}`);
-        const signature = bs58.encode(Buffer.from(await crypto.subtle.digest('SHA-256', message)));
-        
-        return {
-          success: true,
-          sessionId: params.wallet.publicKey,
-          sessionSignature: signature,
-          timestamp: new Date().toISOString()
-        };
-      }
-      // Add return for non-readonly case
-      return {
-        success: true,
-        sessionId: params.wallet.publicKey,
-        timestamp: new Date().toISOString()
-      };
+    async initSession(params: { 
+        wallet: { 
+            publicKey: string; 
+            signature?: string;
+            credentials?: {
+                publicKey: string;
+                signature: string;
+                signTransaction: boolean;
+                signAllTransactions: boolean;
+                connected: boolean;
+            }
+        } 
+    }): Promise<SessionResponse> {
+        try {
+            // Use credentials signature if available
+            const signature = params.wallet.credentials?.signature || params.wallet.signature;
+            const publicKey = params.wallet.credentials?.publicKey || params.wallet.publicKey;
+            
+            if (!signature) {
+                return {
+                    success: false,
+                    error: "Missing signature",
+                    code: "MISSING_SIGNATURE"
+                };
+            }
+
+            console.log('Session initialization attempt:', {
+                publicKey,
+                signaturePrefix: signature.slice(0, 10) + '...',
+                hasCredentials: !!params.wallet.credentials
+            });
+
+            // For non-readonly mode, verify the signature
+            const isValid = await this.verifyWalletSignature(publicKey, signature);
+
+            if (!isValid) {
+                console.error('Session signature verification failed:', {
+                    publicKey,
+                    signaturePrefix: signature.slice(0, 10) + '...'
+                });
+                return {
+                    success: false,
+                    error: "Invalid signature",
+                    code: "INVALID_SIGNATURE"
+                };
+            }
+
+            return {
+                success: true,
+                sessionId: publicKey,
+                sessionSignature: signature,
+                timestamp: new Date().toISOString()
+            };
+        } catch (error) {
+            console.error('Session initialization error:', error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : "Unknown error",
+                code: "SESSION_INIT_ERROR"
+            };
+        }
+    }
+
+    private async verifyWalletSignature(publicKey: string, signature: string): Promise<boolean> {
+        try {
+            // Create message buffer - MUST match exactly what was signed
+            const message = new TextEncoder().encode("authorize_trading_session");
+            
+            // Convert the signature from base58 to Uint8Array
+            const signatureBytes = bs58.decode(signature);
+            
+            // Create PublicKey instance
+            const pubKey = new PublicKey(publicKey);
+            
+            // Log verification details
+            console.log('Verifying signature:', {
+                publicKey,
+                signaturePrefix: signature.slice(0, 10) + '...',
+                messageText: "authorize_trading_session",
+                signatureBytesLength: signatureBytes.length
+            });
+
+            // Use nacl for verification instead of connection.verify
+            const messageHash = await crypto.subtle.digest('SHA-256', message);
+            const verified = nacl.sign.detached.verify(
+                new Uint8Array(messageHash),
+                signatureBytes,
+                pubKey.toBytes()
+            );
+
+            console.log('Signature verification result:', verified);
+            return verified;
+
+        } catch (error) {
+            console.error('Signature verification error:', error);
+            return false;
+        }
     }
     
     async validateSession(sessionId: string): Promise<boolean> {
