@@ -29,6 +29,12 @@ __all__ = [
     'DEFAULT_SIMILARITY_THRESHOLD'
 ]
 
+def handle_supabase_response(response):
+        """Helper to consistently handle Supabase responses"""
+        if isinstance(response, dict):
+            return response.get('data', [])
+        return getattr(response, 'data', [])
+
 def init_memory_system(supabase_client):
     """Initialize the complete memory system"""
     embedding_manager = EmbeddingManager(
@@ -123,3 +129,5 @@ def validate_config(config: Dict[str, Any]) -> bool:
     except Exception as e:
         logging.error(f"Configuration validation error: {str(e)}")
         return False
+    
+    

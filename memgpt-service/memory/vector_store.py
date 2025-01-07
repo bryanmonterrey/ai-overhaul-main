@@ -39,13 +39,17 @@ class VectorStore:
                 'created_at': datetime.now().isoformat()
             }
             
-            # Create the query
-            query = self.supabase.table('memory_embeddings').insert(insert_data)
+            # Execute insert query
+            response = await self.supabase.table('memory_embeddings')\
+                .insert(insert_data)\
+                .execute()
             
-            # Execute the query
-            response = await query.execute()
-            
-            if not hasattr(response, 'data') or not response.data:
+            if isinstance(response, dict):
+                data = response.get('data', [])
+            else:
+                data = getattr(response, 'data', [])
+                
+            if not data:
                 logging.error("No data returned from Supabase")
                 return False
                 
@@ -71,13 +75,18 @@ class VectorStore:
                 .in_('memory_id', memory_ids)\
                 .execute()
             
-            if not response or not hasattr(response, 'data'):
+            if isinstance(response, dict):
+                data = response.get('data', [])
+            else:
+                data = getattr(response, 'data', [])
+                
+            if not data:
                 logging.error("Invalid response from Supabase")
                 return {}
                 
             return {
                 row['memory_id']: np.array(row['embedding'])
-                for row in response.data
+                for row in data
             }
         except Exception as e:
             logging.error(f"Error retrieving vectors: {str(e)}")
