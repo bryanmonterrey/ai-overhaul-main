@@ -8,6 +8,7 @@ from .vector_store import VectorStore
 from .utils.embedding import EmbeddingManager
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
+from collections import defaultdict
 
 @dataclass
 class SearchResult:
@@ -445,7 +446,7 @@ class MemoryRetrieval:
                 
             response = await query.execute()
             
-            if not response.data:
+            if not hasattr(response, 'data') or not response.data:
                 return []
                 
             # Group by emotional context
