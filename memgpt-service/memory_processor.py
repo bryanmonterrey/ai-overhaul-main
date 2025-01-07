@@ -1,5 +1,7 @@
 # memgpt-service/memory_processor.py
+import json
 from typing import List, Dict, Any, TYPE_CHECKING, Optional
+import uuid
 import numpy as np
 from memory import (
     init_memory_system,
@@ -562,6 +564,9 @@ class MemoryProcessor:
     async def store_memory(self, memory_data: Dict[str, Any]) -> Dict[str, Any]:
         """Store a memory directly"""
         try:
+             # Ensure key exists
+            if 'key' not in memory_data:
+                memory_data['key'] = str(uuid.uuid4())
             # Store in database
             response = await self.supabase_client.table('memories')\
                 .insert(memory_data)\
@@ -644,13 +649,12 @@ class MemoryProcessor:
             if isinstance(content, dict):
                 content_str = json.dumps(content)
                 print(f"Content with isinstance: {content_str}")
-            elif content is None:
-                content_str = ""
-                print(f"Content with content is None: {content_str}")
             else:
                 content_str = str(content)
             print(f"Content: {content_str}")    
             compressed_content = content_str
+            print(f"compressed_content: {compressed_content}")   
+            
             if len(compressed_content) > 1000:
                 try:
                     compressed_content = await compress_memory_content(content_str)
@@ -658,12 +662,13 @@ class MemoryProcessor:
                     self.logger.error(f"Error compressing memory content: {str(e)}")
                     compressed_content = content_str
             metadata = metadata or {}
-        
+            memory_key = str(uuid.uuid4()) 
             # Analyze content
             analysis = await self.analyze_content(content_str)
             
             # Prepare memory data
             memory_data = {
+                'key': memory_key,
                 'content': compressed_content,
                 'metadata': {
                     **metadata,
