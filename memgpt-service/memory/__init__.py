@@ -30,10 +30,16 @@ __all__ = [
 ]
 
 def handle_supabase_response(response):
-        """Helper to consistently handle Supabase responses"""
+    """Helper to consistently handle Supabase responses"""
+    try:
         if isinstance(response, dict):
             return response.get('data', [])
-        return getattr(response, 'data', [])
+        if hasattr(response, 'data'):
+            return response.data or []
+        return []
+    except Exception as e:
+        print(f"Error handling Supabase response: {str(e)}")
+        return []
 
 def init_memory_system(supabase_client):
     """Initialize the complete memory system"""

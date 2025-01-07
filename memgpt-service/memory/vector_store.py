@@ -68,11 +68,7 @@ class VectorStore:
                 .in_('memory_id', memory_ids)\
                 .execute()
             
-            if isinstance(response, dict):
-                data = response.get('data', [])
-            else:
-                data = getattr(response, 'data', [])
-                
+            data = handle_supabase_response(response)
             if not data:
                 logging.error("Invalid response from Supabase")
                 return {}
@@ -142,7 +138,8 @@ class VectorStore:
                 .select('memory_id, embedding, created_at')\
                 .execute()
             
-            if not response.data:
+            data = handle_supabase_response(response)
+            if not data:
                 return
                 
             # Reset index
@@ -151,7 +148,7 @@ class VectorStore:
             
             # Add all vectors
             embeddings = []
-            for row in response.data:
+            for row in data:
                 embedding = np.array(row['embedding'])
                 embeddings.append(embedding)
                 self.memory_map[len(embeddings)-1] = row['memory_id']
@@ -166,16 +163,17 @@ class VectorStore:
     async def retrieve_vector(self, memory_id: str) -> Optional[np.ndarray]:
         """Retrieve vector for a memory"""
         try:
-            query = self.supabase.table('memory_embeddings')\
+            response = await self.supabase.table('memory_embeddings')\
                 .select('embedding')\
                 .eq('memory_id', memory_id)\
-                .single()
-            response = await query.execute()
-                
-            if not hasattr(response, 'data') or not response.data:
+                .single()\
+                .execute()
+            
+            data = handle_supabase_response(response)
+            if not data:
                 return None
                 
-            embedding_data = response.data.get('embedding')
+            embedding_data = data.get('embedding')
             if embedding_data:
                 return np.array(embedding_data)
                 

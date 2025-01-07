@@ -73,11 +73,10 @@ class MemoryHierarchy:
                     .single()\
                     .execute()
                 
-                if not response.data:
+                memory = handle_supabase_response(response)
+                if not memory:
                     return None
                     
-                memory = response.data
-                
                 # Get children
                 children_response = await self.supabase.table('memory_hierarchies')\
                     .select('child_memory_id, hierarchy_type, relevance_score')\
@@ -85,8 +84,12 @@ class MemoryHierarchy:
                     .gte('relevance_score', min_relevance)\
                     .execute()
                 
+                children_data = handle_supabase_response(children_response)
+                if not children_data:
+                    children_data = []
+                
                 children = []
-                for rel in children_response.data:
+                for rel in children_data:
                     child = await build_tree(rel['child_memory_id'], depth + 1)
                     if child:
                         children.append({

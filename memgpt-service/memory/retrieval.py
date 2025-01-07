@@ -135,8 +135,9 @@ class MemoryRetrieval:
                 }
             ).execute()
             
-            data = getattr(response, 'data', None)
-            if data is None:
+            # Use helper function instead of direct data access
+            data = handle_supabase_response(response)
+            if not data:
                 logging.error("No data returned from Supabase")
                 return []
                 
@@ -305,11 +306,11 @@ class MemoryRetrieval:
                 .single()\
                 .execute()
                 
-            if not response.data:
+            # Use helper function
+            memory = handle_supabase_response(response)
+            if not memory:
                 return None
                 
-            memory = response.data
-            
             # Calculate context boost
             boost = 1.0
             

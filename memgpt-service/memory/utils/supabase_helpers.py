@@ -1,12 +1,11 @@
 # memgpt-service/memory/utils/supabase_helpers.py
 
 from typing import Any, Dict, List, Optional, TypeVar, Union
-from supabase.client import ClientResponse
 
 T = TypeVar('T')
 
 def handle_supabase_response(
-    response: Union[ClientResponse, Dict, Any], 
+    response: Any, 
     default_value: T = None
 ) -> T:
     """
@@ -24,7 +23,7 @@ def handle_supabase_response(
         if isinstance(response, dict):
             return response.get('data', default_value)
             
-        # Handle ClientResponse
+        # Handle response object
         if hasattr(response, 'data'):
             return response.data or default_value
             
