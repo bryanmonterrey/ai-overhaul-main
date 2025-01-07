@@ -688,6 +688,7 @@ class MemoryProcessor:
             
             # Store in database
             try:
+                print(self.supabase_client)
                 response = await self.supabase_client.table("memories").insert(memory_data).execute()
                 print(f"Response: {response}")
             
