@@ -383,9 +383,18 @@ class RealTimeMonitor:
                 **data,
                 'timestamp': datetime.now().isoformat()
             }
-            await self.supabase.table('trade_executions').insert(execution_data).execute()
+            # Fix: Properly handle the Supabase response
+            response = await self.supabase.table('trade_executions').insert(execution_data).execute()
+            
+            if hasattr(response, 'error') and response.error:
+                logging.error(f"Supabase insert error: {response.error}")
+                raise Exception(f"Database insert failed: {response.error}")
+                
+            return response.data if hasattr(response, 'data') else None
+            
         except Exception as e:
             logging.error(f"Error storing trade execution: {str(e)}")
+            raise  # Re-raise the exception to handle it at a higher level
 
     async def _send_trade_error(self, trade_id: str, error: str):
         """Send trade error update via WebSocket"""
