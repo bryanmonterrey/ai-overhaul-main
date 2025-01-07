@@ -662,6 +662,7 @@ class MemoryProcessor:
                     self.logger.error(f"Error compressing memory content: {str(e)}")
                     compressed_content = content_str
             metadata = metadata or {}
+            print(f"metadata",metadata)
             memory_key = str(uuid.uuid4()) 
             # Analyze content
             analysis = await self.analyze_content(content_str)
@@ -669,6 +670,7 @@ class MemoryProcessor:
             # Prepare memory data
             memory_data = {
                 'key': memory_key,
+                'type': metadata.get('type', 'general'),
                 'content': compressed_content,
                 'metadata': {
                     **metadata,
@@ -679,22 +681,23 @@ class MemoryProcessor:
                 'emotional_context': analysis['emotional_context'],
                 'created_at': datetime.now().isoformat(),
                 'complexity': analysis.get('complexity', 0),
-                'type': metadata.get('type', 'general'),
                 'platform': metadata.get('platform', 'default'),
                 'archive_status': 'active'
             }
+            print(f"memory_data",memory_data)
             
             # Store in database
             try:
-                response = await self.supabase_client.table('memories')\
-                    .insert(memory_data)\
-                    .execute()
+                response = await self.supabase_client.table("memories").insert(memory_data).execute()
                 print(f"Response: {response}")
             
                 if not response.data:
                     raise ValueError("No data returned from memory storage")
+                stored_memory = response.data[0]
+                print(f"stored_memory: {stored_memory}")
 
                 memory_id = response.data[0]['id']
+                print(f"memory_id: {memory_id}")
                 
                 # Store vector embedding
                 if 'vector_embedding' in analysis:
@@ -724,7 +727,7 @@ class MemoryProcessor:
                     self.logger.warning(f"Failed to establish memory relationships: {hierarchy_error}")
 
                 return {
-                    **memory_data,
+                    **metadata,
                     'id': memory_id,
                     'analysis': analysis
                 }
