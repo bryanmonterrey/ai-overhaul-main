@@ -8,6 +8,17 @@ interface TradeParams {
   amount: number;
   inputMint: PublicKey;
   slippage: number;
+  walletInfo?: {
+    publicKey: string;
+    sessionId?: string;
+    sessionSignature?: string;
+    credentials?: {
+      signature?: string;
+      signTransaction?: boolean;
+      signAllTransactions?: boolean;
+      connected?: boolean;
+    };
+  };
 }
 
 export class SolanaService {

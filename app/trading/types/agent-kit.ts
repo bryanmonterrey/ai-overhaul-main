@@ -372,10 +372,11 @@ export interface Config {
 }
 
 // Add the session response interface
-export interface SessionResponse extends BaseResponse {
-  sessionId?: string;
-  session_message?: string;
-  error?: string;
+export interface SessionResponse {
+  success: boolean;
+  sessionId: string;
+  sessionSignature?: string;  // Make it optional since not all responses include it
+  timestamp: string;
 }
 
 // Add response type for sessions

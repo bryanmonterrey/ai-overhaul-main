@@ -16,6 +16,8 @@ import { useWalletModal } from '@solana/wallet-adapter-react-ui';
 import { PublicKey } from '@solana/web3.js';
 import { SignerWalletAdapterProps } from '@solana/wallet-adapter-base';
 import bs58 from 'bs58';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
+import { Database } from '../../../lib/supabase';
 
 // Updated interfaces for session management
 interface TradeSession {
@@ -61,6 +63,14 @@ interface PortfolioUpdateData {
   dailyPnL: number;
 }
 
+interface TradeWalletInfo {
+  publicKey: PublicKey;
+  signTransaction: SignerWalletAdapterProps['signTransaction'];
+  signAllTransactions: SignerWalletAdapterProps['signAllTransactions'];
+  timestamp: number;
+  signature: string;
+}
+
 type MessageData = TradeExecutionData | PortfolioUpdateData;
 
 // Helper functions
@@ -72,33 +82,8 @@ function isPortfolioUpdate(data: any): data is PortfolioUpdateData {
   return data?.type === 'portfolio_update';
 }
 
-// Local storage session management
-const SESSION_KEY = 'trading_session';
-
-function getStoredSession(): TradeSession | null {
-  try {
-    const session = localStorage.getItem(SESSION_KEY);
-    if (!session) return null;
-    const parsed = JSON.parse(session);
-    if (Date.now() > parsed.expiresAt) {
-      localStorage.removeItem(SESSION_KEY);
-      return null;
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function storeSession(session: TradeSession): void {
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-}
-
-function clearSession(): void {
-  localStorage.removeItem(SESSION_KEY);
-}
-
 export function AdminTradingChat() {
+  const supabase = createClientComponentClient<Database>();
   const { toast } = useToast();
   const scrollRef = useRef<HTMLDivElement>(null);
   const { publicKey, signTransaction, signAllTransactions, connected, signMessage } = useWallet();
@@ -110,16 +95,43 @@ export function AdminTradingChat() {
 
   // Initialize trading session on wallet connection
   useEffect(() => {
-    if (publicKey && connected) {
-      const storedSession = getStoredSession();
-      if (storedSession && storedSession.publicKey === publicKey.toString()) {
-        setActiveSession(storedSession);
+    const checkExistingSession = async () => {
+      if (publicKey && connected) {
+        try {
+          const { data: session, error } = await supabase
+            .from('sessions')
+            .select('*')
+            .eq('wallet_address', publicKey.toString())
+            .eq('is_active', true)
+            .gt('expires_at', new Date().toISOString())
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+          if (error || !session) {
+            setActiveSession(null);
+            return;
+          }
+
+          const tradeSession: TradeSession = {
+            publicKey: session.wallet_address,
+            signature: session.signature,
+            timestamp: new Date(session.created_at).getTime(),
+            expiresAt: new Date(session.expires_at).getTime()
+          };
+
+          setActiveSession(tradeSession);
+        } catch (error) {
+          console.error('Error checking existing session:', error);
+          setActiveSession(null);
+        }
+      } else {
+        setActiveSession(null);
       }
-    } else {
-      setActiveSession(null);
-      clearSession();
-    }
-  }, [publicKey, connected]);
+    };
+
+    checkExistingSession();
+  }, [publicKey, connected, supabase]);
 
   // Update wallet connection
   useEffect(() => {
@@ -191,24 +203,21 @@ export function AdminTradingChat() {
     }
   });
 
-  // Scroll helper function
+  // Scroll helper function and effects
   const scrollToBottom = () => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   };
 
-  // Effect for scrolling
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
-  // Effect for monitoring messages
   useEffect(() => {
     console.log('Messages updated:', messages);
   }, [messages]);
 
-  // Effect for error handling
   useEffect(() => {
     if (error) {
       console.error('Chat error state:', error);
@@ -242,19 +251,43 @@ export function AdminTradingChat() {
       // Create session message
       const message = new TextEncoder().encode("authorize_trading_session");
       const signature = await signMessage(message);
+      const encodedSignature = bs58.encode(signature);
 
-      const session: TradeSession = {
-        publicKey: publicKey.toString(),
-        signature: bs58.encode(signature),  // Use base58 instead of base64
-        timestamp: Date.now(),
-        expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24 hours
+      // Store session in database
+      const { data: session, error } = await supabase
+        .from('sessions')
+        .insert({
+          wallet_address: publicKey.toString(),
+          signature: encodedSignature,
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+          user_agent: navigator.userAgent,
+          is_active: true
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      // Convert database session to TradeSession format
+      const tradeSession: TradeSession = {
+        publicKey: session.wallet_address,
+        signature: session.signature,
+        timestamp: new Date(session.created_at).getTime(),
+        expiresAt: new Date(session.expires_at).getTime()
       };
 
-      storeSession(session);
-      setActiveSession(session);
-      return session;
+      setActiveSession(tradeSession);
+      return tradeSession;
+
     } catch (error) {
       console.error('Session initialization error:', error);
+      toast({
+        title: "Session Error",
+        description: error instanceof Error ? error.message : "Failed to initialize session",
+        variant: "destructive"
+      });
       return null;
     } finally {
       setIsSessionLoading(false);
@@ -294,7 +327,6 @@ export function AdminTradingChat() {
         
         if (!confirmed) return;
       }
-  
       // Execute trade with session
       const result = await aiTradingService.executeManualTrade({
         token: tradeData.token,
@@ -305,15 +337,14 @@ export function AdminTradingChat() {
           publicKey,
           signTransaction,
           signAllTransactions,
-          timestamp: Date.now()
-        }
+          timestamp: Date.now(),
+          signature: session.signature
+        } as TradeWalletInfo
       });
   
-      // Check result and show appropriate notifications
       if (result.signature) {
         console.log('Transaction signature:', result.signature);
         
-        // Show market analysis if available
         if (tradeData.market_analysis) {
           toast({
             title: "Market Analysis",
@@ -322,7 +353,6 @@ export function AdminTradingChat() {
           });
         }
   
-        // Show success notification with transaction details
         toast({
           title: "Trade Executed",
           description: `Successfully executed ${tradeData.side} trade for ${tradeData.amount} ${tradeData.token}. Signature: ${result.signature.slice(0, 8)}...`,
@@ -337,7 +367,13 @@ export function AdminTradingChat() {
       // Clear session if it's invalid
       if (error instanceof Error && error.message.includes('session')) {
         setActiveSession(null);
-        clearSession();
+        // Update session status in database instead of just clearing local state
+        if (activeSession) {
+          await supabase
+            .from('sessions')
+            .update({ is_active: false })
+            .eq('signature', activeSession.signature);
+        }
       }
   
       toast({
@@ -348,57 +384,11 @@ export function AdminTradingChat() {
     }
   };
 
-  // Subscribe to trade status updates
-  useEffect(() => {
-    const tradingSubscription = aiTradingService.subscribeToUpdates((update) => {
-      if (update.type === 'trade_execution' || update.type === 'portfolio_update') {
-        console.log('Received trading update:', update);
-      }
-    });
-  
-    const statusSubscription = aiTradingService.subscribeToTradeStatus((status) => {
-      console.log('Trade status update:', status);
-      switch(status.status) {
-        case 'initiated':
-          toast({
-            title: "Trade Initiated",
-            description: `Starting trade execution...`
-          });
-          break;
-        case 'checking_route':
-          toast({
-            title: "Finding Best Route",
-            description: "Checking available trading routes..."
-          });
-          break;
-        case 'confirmed':
-          toast({
-            title: "Trade Confirmed",
-            description: `Trade successfully executed!`
-          });
-          break;
-        case 'error':
-          toast({
-            title: "Trade Error",
-            description: status.error,
-            variant: "destructive"
-          });
-          break;
-      }
-    });
-  
-    return () => {
-      tradingSubscription.unsubscribe();
-      statusSubscription.unsubscribe();
-    };
-  }, [toast]);
-
   const handleFormSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
   
     if (input.trim()) {
       try {
-        // Ensure we have a valid session for trade commands
         const inputParts = input.trim().toLowerCase().split(' ');
         if (['buy', 'sell'].includes(inputParts[0]) && !activeSession) {
           const session = await initializeOrRefreshSession();
@@ -471,11 +461,10 @@ export function AdminTradingChat() {
         text: text,
         role: msg.role === 'system' || msg.role === 'data' ? 'assistant' : msg.role,
         data: msg.data,
-        walletInfo: msg.walletInfo  // Include wallet info in formatted messages
+        walletInfo: msg.walletInfo
       };
     });
 
-  // Session indicator component
   const SessionStatus = () => (
     <div className="absolute top-4 right-4 flex items-center gap-2">
       {isSessionLoading ? (

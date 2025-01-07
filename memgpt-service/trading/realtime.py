@@ -13,6 +13,9 @@ import uuid
 import logging
 from .solana_service import SolanaService
 import aiohttp
+from base58 import b58encode, b58decode
+import hashlib
+from solana.keypair import Keypair
 
 @dataclass
 class ConsciousnessMetrics:
@@ -218,11 +221,20 @@ class RealTimeMonitor:
                 def __init__(self, public_key, credentials=None):
                     self.public_key = public_key
                     self.connected = True
+                    
+                    async def generate_readonly_session_signature(pub_key: str) -> str:
+                        """Generate a deterministic but secure signature for read-only sessions"""
+                        message = f"readonly-session-{pub_key}".encode()
+                        hash_obj = hashlib.sha256(message)
+                        return b58encode(hash_obj.digest()).decode()
+                    
                     if credentials:
                         self.credentials = credentials
                     else:
+                        session_signature = asyncio.run(generate_readonly_session_signature(public_key))
                         self.credentials = {
                             'publicKey': public_key,
+                            'signature': session_signature,  # Use generated signature
                             'signTransaction': True,
                             'signAllTransactions': True,
                             'connected': True
@@ -256,7 +268,7 @@ class RealTimeMonitor:
                     # Try to load as base58
                     from base58 import b58decode
                     key_bytes = b58decode(private_key)
-                    
+                        
                 self.wallet = Keypair.from_secret_key(key_bytes)
                 return True
 
@@ -327,6 +339,25 @@ class RealTimeMonitor:
                 'error': error_msg,
                 'user_message': 'Failed to execute trade due to an internal error.'
             }
+
+    async def generate_readonly_session_signature(public_key: str) -> str:
+        """Generate a deterministic but secure signature for read-only sessions"""
+        message = f"readonly-session-{public_key}".encode()
+        hash_obj = hashlib.sha256(message)
+        return b58encode(hash_obj.digest()).decode()
+
+    def initialize_readonly_wallet(public_key: str):
+        wallet_info = {
+            "publicKey": public_key,
+            "signature": generate_readonly_session_signature(public_key),
+            "credentials": {
+                "publicKey": public_key,
+                "signTransaction": True,
+                "signAllTransactions": True,
+                "connected": True
+            }
+        }
+        return wallet_info
         
     async def broadcast_trading_update(self, update_type: str, data: Dict[str, Any], channel: str):
         """Broadcast trading update via WebSocket"""

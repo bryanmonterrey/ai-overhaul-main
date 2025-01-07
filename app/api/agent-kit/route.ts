@@ -9,10 +9,16 @@ import { bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
 
 export const runtime = 'nodejs';
 
-// Store active agent-kit instances
-const activeKits = new Map<string, { kit: ExtendedSolanaAgentKit, expiresAt: number }>();
+// Updated interface for session storage
+interface KitSession {
+  kit: ExtendedSolanaAgentKit;
+  expiresAt: number;
+  signature: string;
+}
 
-// Helper function to validate environment variables
+// Store active agent-kit instances with signatures
+const activeKits = new Map<string, KitSession>();
+
 function validateEnvironment() {
   if (!process.env.NEXT_PUBLIC_RPC_URL) {
     console.error('Missing RPC URL environment variable');
@@ -25,11 +31,10 @@ function validateEnvironment() {
   }
 }
 
-// Helper function to create an agent kit instance
 function createAgentKit(): ExtendedSolanaAgentKit {
   try {
     return new ExtendedSolanaAgentKit(
-      'readonly',  // Use the 'readonly' flag instead of generating key here
+      'readonly',
       process.env.NEXT_PUBLIC_RPC_URL!,
       process.env.OPENAI_API_KEY!
     );
@@ -80,14 +85,28 @@ export async function POST(req: Request) {
         });
       }
 
+      // Verify initial signature
+      const isValid = await verifySession(
+        params.wallet.publicKey,
+        params.wallet.signature
+      );
+
+      if (!isValid) {
+        return NextResponse.json({
+          error: 'Invalid wallet signature',
+          code: 'INVALID_SIGNATURE'
+        }, { status: 401 });
+      }
+
       try {
         const kit = createAgentKit();
         const sessionId = params.wallet.publicKey;
-        const sessionExpiry = Date.now() + (24 * 60 * 60 * 1000); // 24 hours
+        const sessionExpiry = Date.now() + (24 * 60 * 60 * 1000);
 
         activeKits.set(sessionId, {
           kit,
-          expiresAt: sessionExpiry
+          expiresAt: sessionExpiry,
+          signature: params.wallet.signature
         });
 
         return NextResponse.json({
@@ -156,13 +175,8 @@ export async function POST(req: Request) {
         });
       }
 
-      // Verify signature
-      const isValidSession = await verifySession(
-        params.wallet.publicKey,
-        sessionSignature
-      );
-
-      if (!isValidSession) {
+      // Verify against stored signature
+      if (sessionSignature !== kitSession.signature) {
         return NextResponse.json({
           error: 'Invalid session signature',
           code: 'SESSION_INVALID'
@@ -197,40 +211,39 @@ export async function POST(req: Request) {
           }
         });
 
-        case 'getTokenData':
-    try {
-      const kit = createAgentKit();
-      let tokenData;
-      // Use the correct method based on params
-      if (params.symbol) {
-        tokenData = await kit.getTokenDataByTicker(params.symbol);
-      } else if (params.mint) {
-        tokenData = await kit.getTokenDataByAddress(params.mint);
-      } else {
-        return NextResponse.json({
-          error: 'Either symbol or mint address required'
-        }, { status: 400 });
-      }
-      return NextResponse.json({ success: true, data: tokenData });
-    } catch (error: any) {
-      console.error('Token data error:', error);
-      return NextResponse.json({
-        error: 'Failed to fetch token data',
-        details: error.message
-      }, { status: 500 });
-    }
+      case 'getTokenData':
+        try {
+          const kit = createAgentKit();
+          let tokenData;
+          if (params.symbol) {
+            tokenData = await kit.getTokenDataByTicker(params.symbol);
+          } else if (params.mint) {
+            tokenData = await kit.getTokenDataByAddress(params.mint);
+          } else {
+            return NextResponse.json({
+              error: 'Either symbol or mint address required'
+            }, { status: 400 });
+          }
+          return NextResponse.json({ success: true, data: tokenData });
+        } catch (error: any) {
+          console.error('Token data error:', error);
+          return NextResponse.json({
+            error: 'Failed to fetch token data',
+            details: error.message
+          }, { status: 500 });
+        }
 
-    case 'getPrice':
-      try {
-        const kit = createAgentKit();
-        const price = await kit.fetchTokenPrice(params.mint);
-        return NextResponse.json({ success: true, price });
-      } catch (error: any) {
-        return NextResponse.json({
-          error: 'Failed to fetch price',
-          details: error.message
-        }, { status: 500 });
-      }
+      case 'getPrice':
+        try {
+          const kit = createAgentKit();
+          const price = await kit.fetchTokenPrice(params.mint);
+          return NextResponse.json({ success: true, price });
+        } catch (error: any) {
+          return NextResponse.json({
+            error: 'Failed to fetch price',
+            details: error.message
+          }, { status: 500 });
+        }
 
       case 'validateSession':
         if (!params?.sessionSignature || !params?.publicKey) {
@@ -243,13 +256,12 @@ export async function POST(req: Request) {
             }
           });
         }
-        const sessionValid = await verifySession(
-          params.publicKey,
-          params.sessionSignature
-        );
         const kitSession = activeKits.get(params.publicKey);
+        const valid = kitSession?.signature === params.sessionSignature && 
+                     Date.now() <= (kitSession?.expiresAt || 0);
+        
         return NextResponse.json({
-          valid: sessionValid && !!kitSession && Date.now() <= kitSession.expiresAt,
+          valid,
           timestamp: new Date().toISOString()
         }, {
           headers: {

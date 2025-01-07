@@ -1,7 +1,6 @@
 // src/app/lib/supabase.ts
 
 import { createClient } from '@supabase/supabase-js';
-import { Database } from '@/types/supabase.types';
 
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
   throw new Error('Missing env.NEXT_PUBLIC_SUPABASE_URL');
@@ -61,3 +60,29 @@ export async function getActiveConnections() {
   if (error) throw error;
   return count || 0;
 }
+
+export type Database = {
+  // Your database type definitions here
+  public: {
+    Tables: {
+      sessions: {
+        Row: {
+          wallet_address: string;
+          signature: string;
+          created_at: string;
+          expires_at: string;
+          user_agent: string;
+          is_active: boolean;
+        };
+        Insert: {
+          wallet_address: string;
+          signature: string;
+          expires_at: string;
+          user_agent?: string;
+          is_active?: boolean;
+        };
+      };
+      // ... other tables
+    };
+  };
+};

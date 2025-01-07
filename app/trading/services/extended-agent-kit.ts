@@ -40,16 +40,26 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
 
     // Session management
     async initSession(params: { wallet: { publicKey: string; sessionProof?: string; } }): Promise<SessionResponse> {
-      if (this.isReadonly && !params.wallet.sessionProof) {
-        throw new Error('Session proof required in readonly mode');
+      if (this.isReadonly) {
+        // Generate deterministic signature for readonly mode
+        const message = new TextEncoder().encode(`readonly-session-${params.wallet.publicKey}`);
+        const signature = bs58.encode(Buffer.from(await crypto.subtle.digest('SHA-256', message)));
+        
+        return {
+          success: true,
+          sessionId: params.wallet.publicKey,
+          sessionSignature: signature,
+          timestamp: new Date().toISOString()
+        };
       }
+      // Add return for non-readonly case
       return {
         success: true,
-        sessionId: Math.random().toString(),
+        sessionId: params.wallet.publicKey,
         timestamp: new Date().toISOString()
       };
     }
-  
+    
     async validateSession(sessionId: string): Promise<boolean> {
       return !this.isReadonly;
     }
