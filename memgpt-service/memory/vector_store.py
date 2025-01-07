@@ -32,16 +32,22 @@ class VectorStore:
     async def store_vector(self, memory_id: str, embedding: np.ndarray) -> bool:
         """Store vector embedding in database"""
         try:
-            await self.supabase.table('memory_embeddings').insert({
+            response = await self.supabase.table('memory_embeddings').insert({
                 'memory_id': memory_id,
                 'embedding': embedding.tolist(),
                 'created_at': datetime.now().isoformat()
             }).execute()
             
+            data = getattr(response, 'data', None)
+            if data is None:
+                logging.error("No data returned from Supabase")
+                return False
+                
             # Update FAISS index
             self.index.add(embedding.reshape(1, -1))
             self.memory_map[self.index.ntotal - 1] = memory_id
             return True
+            
         except Exception as e:
             logging.error(f"Error storing vector: {str(e)}")
             return False
@@ -54,6 +60,10 @@ class VectorStore:
                 .in_('memory_id', memory_ids)\
                 .execute()
             
+            if not response or not hasattr(response, 'data'):
+                logging.error("Invalid response from Supabase")
+                return {}
+                
             return {
                 row['memory_id']: np.array(row['embedding'])
                 for row in response.data

@@ -123,34 +123,35 @@ class MemoryRetrieval:
             return []
 
     async def _temporal_search(
-        self,
-        query: str,
-        limit: int,
-        context: Optional[Dict] = None,
-        filters: Optional[Dict] = None
-    ) -> List[SearchResult]:
+    self,
+    query: str,
+    limit: int,
+    context: Optional[Dict] = None,
+    filters: Optional[Dict] = None
+) -> List[SearchResult]:
         """Time-based search with relevance decay"""
         try:
-            # Get recent memories with basic text matching
+            # Use the search_memories function we created
             response = await self.supabase.rpc(
-                'search_memories_temporal',
+                'search_memories',
                 {
                     'search_query': query,
-                    'limit_val': limit * 2  # Get more for filtering
+                    'limit_val': limit * 2
                 }
             ).execute()
             
-            if not response.data:
+            data = getattr(response, 'data', None)
+            if data is None:
+                logging.error("No data returned from Supabase")
                 return []
                 
             results = []
             now = datetime.now()
             
-            for memory in response.data:
+            for memory in data:
                 if filters and not self._apply_filters(memory, filters):
                     continue
                     
-                # Calculate time-based relevance
                 age = (now - datetime.fromisoformat(memory['created_at'])).days
                 time_relevance = 1.0 / (1.0 + (age / 30))  # 30-day half-life
                 
