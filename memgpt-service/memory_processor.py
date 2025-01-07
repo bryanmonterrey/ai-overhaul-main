@@ -704,7 +704,7 @@ class MemoryProcessor:
                 # Store vector embedding
                 if 'vector_embedding' in analysis:
                     try:
-                        await self.vector_store.store_vector(
+                        self.vector_store.store_vector(
                             memory_id,
                             np.array(analysis['vector_embedding'])
                         )
@@ -713,13 +713,13 @@ class MemoryProcessor:
                 
                 try:
                     # Add to hierarchy if related memories exist
-                    similar = await self.find_most_similar(
+                    similar = self.find_most_similar(
                         {'content': content_str},
                         []  # Let the system find candidates
                     )
                     
                     if similar:
-                        await self.hierarchy.add_memory_relationship(
+                        self.hierarchy.add_memory_relationship(
                             similar.get('id'),
                             memory_id,
                             'semantic',
