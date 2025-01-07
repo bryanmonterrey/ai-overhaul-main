@@ -1,10 +1,9 @@
 // app/api/trading/admin/chat/route.ts
-import { NextRequest } from 'next/server';
+import { Database } from '@/supabase/functions/supabase.types';
+import { TradingMessage } from '@/types/chat';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { Database } from '@/supabase/functions/supabase.types';
-import { Message } from 'ai';
-import { TradingMessage } from '@/types/chat';
+import { NextRequest } from 'next/server';
 
 const API_URL = process.env.NEXT_PUBLIC_PYTHON_API_URL || 'http://localhost:3001';
 
@@ -24,8 +23,8 @@ export async function POST(req: NextRequest) {
   try {
     // Keep all your existing auth code ...
     const cookieStore = cookies();
-    const supabase = createRouteHandlerClient<Database>({ 
-      cookies: () => cookieStore 
+    const supabase = createRouteHandlerClient<Database>({
+      cookies: () => cookieStore
     });
 
     // Verify admin session
@@ -50,7 +49,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { messages, data }: { messages: TradingMessage[], data: any } = await req.json();
-    
+
     if (!messages?.length) {
       return new Response('No messages provided', { status: 400 });
     }
@@ -95,86 +94,84 @@ export async function POST(req: NextRequest) {
 
     // Handle the streaming response
     (async () => {
-        try {
-          const decoder = new TextDecoder();
-          let buffer = '';
-      
-          while (true) {
-            const { done, value } = await reader.read();
-            
-            if (done) {
-              // Handle any remaining buffer
-              if (buffer.trim()) {
-                try {
-                  const data = JSON.parse(buffer);
-                  if (data.response) {
-                    const message = createStreamMessage(data.response);
-                    await writer.write(
-                      new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
-                    );
-                  }
-                } catch (e) {
-                  console.error('Error processing final buffer:', e);
+      try {
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+
+          if (done) {
+            // Handle any remaining buffer
+            if (buffer.trim()) {
+              try {
+                const data = JSON.parse(buffer);
+                if (data.response) {
+                  const message = createStreamMessage(data.response);
+                  await writer.write(
+                    new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
+                  );
                 }
+              } catch (e) {
+                console.error('Error processing final buffer:', e);
               }
+            }
+            await writer.write(
+              new TextEncoder().encode('data: [DONE]\n\n')
+            );
+            await writer.close();
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
+            const jsonString = trimmedLine.slice(6);
+            if (jsonString.trim() === '[DONE]') {
               await writer.write(
                 new TextEncoder().encode('data: [DONE]\n\n')
               );
-              await writer.close();
-              break;
+              continue;
             }
-      
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-      
-            for (const line of lines) {
-              const trimmedLine = line.trim();
-              if (!trimmedLine || !trimmedLine.startsWith('data: ')) continue;
-      
-              try {
-                // Remove the 'data: ' prefix and parse the JSON
-                const jsonString = trimmedLine.slice(6);
-                const data = JSON.parse(jsonString);
-      
-                if (data === '[DONE]') {
-                  await writer.write(
-                    new TextEncoder().encode('data: [DONE]\n\n')
-                  );
-                  continue;
-                }
-      
-                // Extract and format the message content
-                const message = {
-                  id: data.id || crypto.randomUUID(),
-                  role: data.role || 'assistant',
-                  content: data.content || data.response || '',
-                  createdAt: data.createdAt || new Date().toISOString()
-                };
-      
-                await writer.write(
-                  new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
-                );
-              } catch (e) {
-                console.error('Error processing line:', trimmedLine, e);
-                continue;
-              }
+            try {
+              // Remove the 'data: ' prefix and parse the JSON
+              const data = JSON.parse(jsonString);
+
+              // Extract and format the message content
+              const message = {
+                id: data.id || crypto.randomUUID(),
+                role: data.role || 'assistant',
+                content: data.content || data.response || '',
+                createdAt: data.createdAt || new Date().toISOString()
+              };
+
+              await writer.write(
+                new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
+              );
+            } catch (e) {
+              console.error('Error processing line:', trimmedLine, e);
+              continue;
             }
           }
-        } catch (error) {
-          console.error('Streaming error:', error);
-          const message = createStreamMessage(
-            `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-          );
-          await writer.write(
-            new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
-          );
-          await writer.write(
-            new TextEncoder().encode('data: [DONE]\n\n')
-          );
-          await writer.close();
         }
-      })();
+      } catch (error) {
+        console.error('Streaming error:', error);
+        const message = createStreamMessage(
+          `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+        );
+        await writer.write(
+          new TextEncoder().encode(`data: ${JSON.stringify(message)}\n\n`)
+        );
+        await writer.write(
+          new TextEncoder().encode('data: [DONE]\n\n')
+        );
+        await writer.close();
+      }
+    })();
 
     return new Response(stream.readable, {
       headers: {
@@ -187,10 +184,10 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     console.error('Route handler error:', error);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         error: 'Error processing request',
         details: error instanceof Error ? error.message : 'Unknown error'
-      }), 
+      }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
