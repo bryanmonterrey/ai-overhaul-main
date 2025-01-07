@@ -7,6 +7,7 @@ import networkx as nx
 import json
 import logging
 from collections import defaultdict
+from .utils.supabase_helpers import handle_supabase_response, safe_supabase_execute
 
 @dataclass
 class MemoryNode:
@@ -26,30 +27,27 @@ class MemoryHierarchy:
         self.cache = {}
         self.importance_threshold = 0.7
         
-    async def add_memory_relationship(
-        self,
-        parent_id: str,
-        child_id: str,
-        hierarchy_type: str,
-        relevance_score: float
-    ):
-        """Add a hierarchical relationship between memories"""
+    async def add_memory_relationship(self, parent_id: str, child_id: str, 
+                                    hierarchy_type: str, relevance_score: float):
         try:
-            await self.supabase.table('memory_hierarchies').insert({
-                'parent_memory_id': parent_id,
-                'child_memory_id': child_id,
-                'hierarchy_type': hierarchy_type,
-                'relevance_score': relevance_score
-            }).execute()
-            
-            # Update graph
-            self.graph.add_edge(
-                parent_id,
-                child_id,
-                type=hierarchy_type,
-                relevance=relevance_score
+            success, _ = await safe_supabase_execute(
+                self.supabase.table('memory_hierarchies').insert({
+                    'parent_memory_id': parent_id,
+                    'child_memory_id': child_id,
+                    'hierarchy_type': hierarchy_type,
+                    'relevance_score': relevance_score
+                }),
+                "Failed to add memory relationship"
             )
             
+            if success:
+                self.graph.add_edge(
+                    parent_id,
+                    child_id,
+                    type=hierarchy_type,
+                    relevance=relevance_score
+                )
+                
         except Exception as e:
             logging.error(f"Error adding relationship: {str(e)}")
 

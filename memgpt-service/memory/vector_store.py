@@ -8,6 +8,7 @@ from .utils.embedding import EmbeddingManager
 import faiss
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
+from .utils.supabase_helpers import handle_supabase_response, safe_supabase_execute
 
 class VectorStore:
     def __init__(self, supabase: Client, embedding_manager: Optional[EmbeddingManager] = None):
@@ -30,27 +31,19 @@ class VectorStore:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def store_vector(self, memory_id: str, embedding: np.ndarray) -> bool:
-        """Store vector embedding in database"""
         try:
-            # Prepare the data
             insert_data = {
                 'memory_id': memory_id,
                 'embedding': embedding.tolist(),
                 'created_at': datetime.now().isoformat()
             }
             
-            # Execute insert query
-            response = await self.supabase.table('memory_embeddings')\
-                .insert(insert_data)\
-                .execute()
+            success, result = await safe_supabase_execute(
+                self.supabase.table('memory_embeddings').insert(insert_data),
+                "Failed to store vector"
+            )
             
-            if isinstance(response, dict):
-                data = response.get('data', [])
-            else:
-                data = getattr(response, 'data', [])
-                
-            if not data:
-                logging.error("No data returned from Supabase")
+            if not success:
                 return False
                 
             # Update FAISS index

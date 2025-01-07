@@ -9,6 +9,7 @@ from .utils.embedding import EmbeddingManager
 import logging
 from tenacity import retry, stop_after_attempt, wait_exponential
 from collections import defaultdict
+from .utils.supabase_helpers import handle_supabase_response, safe_supabase_execute
 
 @dataclass
 class SearchResult:
@@ -70,19 +71,12 @@ class MemoryRetrieval:
             logging.error(f"Search error: {str(e)}")
             return []
 
-    async def _semantic_search(
-        self,
-        query: str,
-        limit: int,
-        context: Optional[Dict] = None,
-        filters: Optional[Dict] = None
-    ) -> List[SearchResult]:
-        """Semantic similarity-based search"""
+    async def _semantic_search(self, query: str, limit: int, 
+                             context: Optional[Dict] = None,
+                             filters: Optional[Dict] = None) -> List[SearchResult]:
         try:
-            # Get query embedding
             query_embedding = await self.embedding_manager.get_embedding(query)
             
-            # Search vector store
             similar_vectors = await self.vector_store.similarity_search(
                 query_embedding,
                 k=limit
@@ -91,21 +85,21 @@ class MemoryRetrieval:
             if not similar_vectors:
                 return []
                 
-            # Get full memory data
             memory_ids = [memory_id for memory_id, _ in similar_vectors]
             scores = {memory_id: score for memory_id, score in similar_vectors}
             
-            response = await self.supabase.table('memories')\
-                .select('*')\
-                .in_('id', memory_ids)\
-                .execute()
-                
-            if not response.data:
+            success, memories = await safe_supabase_execute(
+                self.supabase.table('memories')
+                    .select('*')
+                    .in_('id', memory_ids),
+                "Failed to fetch memories"
+            )
+            
+            if not success or not memories:
                 return []
-                
-            # Apply filters if provided
+            
             results = []
-            for memory in response.data:
+            for memory in memories:
                 if filters and not self._apply_filters(memory, filters):
                     continue
                     

@@ -690,25 +690,25 @@ class MemoryProcessor:
             # Store in database
             try:
                 print(self.supabase_client)
-
-                # Execute insert in one step with proper response handling
+                # Create and execute the query in one step
                 response = await self.supabase_client.table("memories")\
                     .insert(memory_data)\
                     .execute()
                 
-                # Check if response has the expected structure
-                if not response or not isinstance(response, dict) or 'data' not in response:
-                    raise ValueError("Invalid response format from Supabase")
-
-                stored_data = response['data']
-                if not stored_data or not isinstance(stored_data, list) or not stored_data[0]:
+                # Handle the response
+                if isinstance(response, dict):
+                    data = response.get('data', [])
+                else:
+                    data = getattr(response, 'data', [])
+                
+                if not data or not isinstance(data, list) or not data[0]:
                     raise ValueError("No data returned from memory storage")
                     
-                stored_memory = stored_data[0]
+                stored_memory = data[0]
                 memory_id = stored_memory['id']
                 print(f"memory_id: {memory_id}")
                 
-                # Store vector embedding
+                # Store vector embedding if present
                 if 'vector_embedding' in analysis:
                     try:
                         vector_embedding = np.array(analysis['vector_embedding'])
@@ -723,8 +723,11 @@ class MemoryProcessor:
                             .insert(vector_data)\
                             .execute()
                         
-                        if not vector_response or not isinstance(vector_response, dict) or 'data' not in vector_response:
-                            self.logger.warning("Failed to store vector embedding - invalid response format")
+                        vector_data = getattr(vector_response, 'data', None) if not isinstance(vector_response, dict) \
+                            else vector_response.get('data')
+                        
+                        if not vector_data:
+                            self.logger.warning("Failed to store vector embedding")
                             
                     except Exception as ve:
                         self.logger.warning(f"Failed to store vector embedding: {ve}")
@@ -747,15 +750,14 @@ class MemoryProcessor:
                     self.logger.warning(f"Failed to establish memory relationships: {hierarchy_error}")
 
                 return {
-                    **metadata,
-                    'id': memory_id,
-                    'analysis': analysis,
                     'success': True,
-                    'stored_memory': stored_memory
+                    'id': memory_id,
+                    'stored_memory': stored_memory,
+                    'analysis': analysis
                 }
-                
+                    
             except Exception as db_error:
-                self.logger.error(f"Database operation failed: {db_error}")
+                self.logger.error(f"Database operation failed: {str(db_error)}")
                 return {
                     'success': False,
                     'error': str(db_error)
