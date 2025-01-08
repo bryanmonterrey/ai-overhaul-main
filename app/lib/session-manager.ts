@@ -1,6 +1,7 @@
 // lib/trading/session-manager.ts
 
 import { createClient } from '@supabase/supabase-js';
+import { serverSupabase } from './supabase/server-client';
 
 interface TradingSession {
     publicKey: string;
@@ -14,105 +15,74 @@ interface TradingSession {
 }
 
 export class TradingSessionManager {
-    private static readonly SESSION_KEY = 'trading_session';
-    private static readonly SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-    private static supabase = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL!,
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    private static readonly SESSION_DURATION = 60 * 60 * 1000; // 1 hour
+    private static readonly REFRESH_WINDOW = 5 * 60 * 1000; // 5 minutes
 
     static async createSession(sessionData: Omit<TradingSession, 'timestamp' | 'expiresAt'>): Promise<TradingSession> {
+        const now = Date.now();
         const session: TradingSession = {
             ...sessionData,
-            timestamp: Date.now(),
-            expiresAt: Date.now() + this.SESSION_DURATION
+            timestamp: now,
+            expiresAt: now + this.SESSION_DURATION
         };
 
-        // Store in localStorage
-        localStorage.setItem(this.SESSION_KEY, JSON.stringify(session));
-
-        // Store in Supabase - match the table structure
-        const { data, error } = await this.supabase
-            .from('sessions')
-            .insert({
-                wallet_address: session.publicKey,
+        const { error } = await serverSupabase
+            .from('trading_sessions')
+            .upsert({
+                public_key: session.publicKey,
                 signature: session.signature,
-                expires_at: new Date(session.expiresAt),
-                is_active: true,
-                user_agent: navigator.userAgent,
-                tag: 'trading_session'
-            })
-            .select()
-            .maybeSingle();
+                created_at: new Date(session.timestamp).toISOString(),
+                expires_at: new Date(session.expiresAt).toISOString(),
+                wallet_data: session.wallet,
+                is_active: true
+            });
 
-        if (error) {
-            console.error('Error storing session in Supabase:', error);
-            throw error;
-        }
-
+        if (error) throw error;
         return session;
     }
 
-    static async getSession(): Promise<TradingSession | null> {
-        try {
-            // Check localStorage first
-            const localSession = localStorage.getItem(this.SESSION_KEY);
-            if (!localSession) return null;
+    static async getSession(publicKey: string): Promise<TradingSession | null> {
+        const { data, error } = await serverSupabase
+            .from('trading_sessions')
+            .select('*')
+            .eq('public_key', publicKey)
+            .eq('is_active', true)
+            .single();
 
-            const session: TradingSession = JSON.parse(localSession);
-            
-            // Verify with Supabase - match the table structure
-            const { data, error } = await this.supabase
-                .from('sessions')
-                .select()
-                .eq('wallet_address', session.publicKey)
-                .eq('is_active', true)
-                .gt('expires_at', new Date().toISOString())
-                .limit(1)
-                .single();
+        if (error || !data) return null;
 
-            if (error) {
-                if (error.code === 'PGRST116') {
-                    // No session found
-                    await this.clearSession();
-                    return null;
-                }
-                console.error('Error fetching session from Supabase:', error);
-                return null;
-            }
+        const now = Date.now();
+        const expiresAt = new Date(data.expires_at).getTime();
+
+        // Auto-refresh session if within refresh window
+        if (now > expiresAt - this.REFRESH_WINDOW) {
+            const refreshedSession = {
+                public_key: data.public_key,
+                signature: data.signature,
+                expires_at: new Date(now + this.SESSION_DURATION).toISOString(),
+                wallet_data: data.wallet_data,
+                is_active: true
+            };
+
+            await serverSupabase
+                .from('trading_sessions')
+                .upsert(refreshedSession);
 
             return {
-                ...session,
+                publicKey: data.public_key,
+                signature: data.signature,
                 timestamp: new Date(data.created_at).getTime(),
-                expiresAt: new Date(data.expires_at).getTime()
+                expiresAt: now + this.SESSION_DURATION,
+                wallet: data.wallet_data
             };
-        } catch (error) {
-            console.error('Error reading trading session:', error);
-            return null;
         }
-    }
 
-    static async clearSession(): Promise<void> {
-        const session = this.getLocalSession();
-        if (session) {
-            // Update Supabase
-            await this.supabase
-                .from('sessions')
-                .update({ is_active: false })
-                .eq('wallet_address', session.publicKey);
-        }
-        
-        // Clear localStorage
-        localStorage.removeItem(this.SESSION_KEY);
-    }
-
-    private static getLocalSession(): TradingSession | null {
-        try {
-            const sessionData = localStorage.getItem(this.SESSION_KEY);
-            if (!sessionData) return null;
-            return JSON.parse(sessionData);
-        } catch {
-            return null;
-        }
+        return {
+            publicKey: data.public_key,
+            signature: data.signature,
+            timestamp: new Date(data.created_at).getTime(),
+            expiresAt: expiresAt,
+            wallet: data.wallet_data
+        };
     }
 }

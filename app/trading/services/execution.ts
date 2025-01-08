@@ -95,7 +95,8 @@ class TradeExecutionService {
   private reconnectDelay = 1000;
   private listeners: { [key: string]: Function[] } = {};
   private activeSessions: Map<string, TradingSession> = new Map();
-  private readonly SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+  private readonly SESSION_DURATION = 30 * 60 * 1000; // 30 minutes
+  private readonly SESSION_REFRESH_WINDOW = 5 * 60 * 1000; // 5 minutes
   private supabase;
 
   constructor() {
@@ -139,16 +140,48 @@ class TradeExecutionService {
       .from('trading_sessions')
       .select('*')
       .eq('public_key', publicKey)
-      .gt('expires_at', new Date().toISOString())
       .single();
 
     if (error || !data) return null;
+
+    // Check if session needs refresh
+    const expiresAt = new Date(data.expires_at).getTime();
+    const now = Date.now();
+
+    if (now > expiresAt) {
+      return null;
+    }
+
+    // Auto-refresh session if within refresh window
+    if (now > expiresAt - this.SESSION_REFRESH_WINDOW) {
+      const refreshedSession = {
+        public_key: data.public_key,
+        signature: data.signature,
+        created_at: data.created_at,
+        expires_at: new Date(now + this.SESSION_DURATION).toISOString(),
+        wallet_data: data.wallet_data,
+        is_active: true
+      };
+
+      await this.supabase
+        .from('trading_sessions')
+        .upsert(refreshedSession)
+        .eq('public_key', data.public_key);
+
+      return {
+        publicKey: data.public_key,
+        signature: data.signature,
+        timestamp: new Date(data.created_at).getTime(),
+        expiresAt: now + this.SESSION_DURATION,
+        wallet: data.wallet_data
+      };
+    }
 
     return {
       publicKey: data.public_key,
       signature: data.signature,
       timestamp: new Date(data.created_at).getTime(),
-      expiresAt: new Date(data.expires_at).getTime(),
+      expiresAt: expiresAt,
       wallet: data.wallet_data
     };
   }
@@ -161,7 +194,8 @@ class TradeExecutionService {
         signature: session.signature,
         created_at: new Date(session.timestamp).toISOString(),
         expires_at: new Date(session.expiresAt).toISOString(),
-        wallet_data: session.wallet
+        wallet_data: session.wallet,
+        is_active: true
       })
       .eq('public_key', session.publicKey);
   }
@@ -256,7 +290,7 @@ class TradeExecutionService {
     const session = await this.getSession(publicKey);
     if (!session) return false;
 
-    return session.signature === signature && session.expiresAt > Date.now();
+    return session.signature === signature;  // expiresAt check handled in getSession
   }
 
   async refreshSession(publicKey: string): Promise<TradingSession | null> {
@@ -464,14 +498,7 @@ class TradeExecutionService {
       throw new Error('No active trading session. Please initialize a session first.');
     }
 
-    if (session.expiresAt < Date.now()) {
-      await this.supabase
-        .from('trading_sessions')
-        .update({ is_active: false })
-        .eq('public_key', wallet.publicKey.toString());
-      throw new Error('Trading session expired. Please initialize a new session.');
-    }
-
+    // Session is automatically refreshed in getSession if needed
     try {
       const agentKit = await this.getOrCreateAgentKit(wallet, session);
       
