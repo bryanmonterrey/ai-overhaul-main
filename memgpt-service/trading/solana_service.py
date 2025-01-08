@@ -131,42 +131,6 @@ class SolanaService:
                 }
             }
 
-            logging.info(f"Initializing session with params: {json.dumps(init_params, default=str)}")
-            
-            # First store the session in Supabase - Fix datetime serialization
-            current_time = datetime.now()
-            current_ms = int(current_time.timestamp() * 1000)  # For bigint columns
-
-            supabase_session = {
-                'signature': signature,
-                'expires_at': current_ms + (24 * 60 * 60 * 1000),  # bigint
-                'timestamp': current_ms,                            # bigint
-                'created_at': current_time.isoformat(),            # timestamptz
-                'updated_at': current_time.isoformat()             # timestamptz
-            }
-
-            # Try to update existing session first, if not exists then insert
-            try:
-                # First try update
-                update_data = self.supabase.table('trading_sessions')\
-                    .update(supabase_session)\
-                    .eq('public_key', public_key)\
-                    .execute()
-                
-                if not update_data.data:
-                    # No existing session, do an insert
-                    supabase_session['public_key'] = public_key  # Add public_key for insert
-                    insert_data = self.supabase.table('trading_sessions')\
-                        .insert(supabase_session)\
-                        .execute()
-                    data = insert_data.data[0] if insert_data.data else None
-                else:
-                    data = update_data.data[0] if update_data.data else None
-
-            except Exception as e:
-                logging.error(f"Session upsert error: {str(e)}")
-                raise
-
             # Call initSession
             session_result = await self._call_agent_kit('initSession', init_params)
 
@@ -178,9 +142,12 @@ class SolanaService:
                     'code': session_result.get('code', 'SESSION_VERIFICATION_FAILED')
                 }
 
+            # Return success with both wallet info and session data
             return {
                 'success': True,
-                'wallet_info': wallet_info
+                'wallet_info': wallet_info,
+                'sessionId': session_result.get('sessionId'),
+                'expiresAt': session_result.get('expiresAt')
             }
 
         except Exception as e:
@@ -258,31 +225,22 @@ class SolanaService:
             raise
 
     async def _call_agent_kit(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Make a request to the agent-kit API"""
         try:
-            logging.info(f"Making request to {self.agent_kit_url}")
-            logging.info(f"Request payload: action={action}, params={params}")
-            
             headers = {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Content-Type': 'application/json'
             }
             
-            # Extract session signature from all possible locations
-            wallet_info = params.get('wallet', {})
-            if isinstance(wallet_info, dict):
-                # Try the new location first
-                session_sig = wallet_info.get('signature')
-                if not session_sig:
-                    # Try the legacy locations
-                    session_sig = (
-                        wallet_info.get('credentials', {}).get('signature') or
-                        wallet_info.get('credentials', {}).get('sessionProof')
-                    )
-                
-                if session_sig:
-                    headers['X-Trading-Session'] = session_sig
-                    logging.info("Added session signature to headers")
-            
+            # Add session signature if available
+            if session_id := params.get('wallet', {}).get('signature'):
+                headers['Authorization'] = f'Bearer {session_id}'
+            elif session_id := params.get('sessionId'):
+                headers['Authorization'] = f'Bearer {session_id}'
+
+            logging.info(f"Making request to {self.agent_kit_url}")
+            logging.info(f"Request payload: action={action}, params={params}")
+            logging.info(f"Added session signature to headers")
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.agent_kit_url,
@@ -330,11 +288,24 @@ class SolanaService:
             if not session_result.get('success'):
                 return session_result
 
+            # Store session ID for subsequent requests
+            session_id = session_result.get('sessionId')
+            if not session_id:
+                return {
+                    'success': False,
+                    'error': 'No session ID returned from verification',
+                    'code': 'SESSION_ID_MISSING'
+                }
+
+            # Update both wallet and params with session ID
+            wallet_info['signature'] = session_id
+            wallet_info['credentials']['signature'] = session_id
+
             # Verify token using the dedicated method
             try:
                 token_info = await self._verify_token(params['asset'])
                 params['token_data'] = token_info
-                token_address = token_info['address']  # _verify_token always returns address
+                token_address = token_info['address']
             except Exception as token_error:
                 logging.error(f"Token verification failed: {str(token_error)}")
                 return {
@@ -352,8 +323,9 @@ class SolanaService:
                 'tokenIn': self.token_addresses['SOL'],
                 'tokenOut': token_address,
                 'slippageBps': params.get('slippage', 100),
-                'token_data': token_info,  # Use verified token info
-                'wallet': wallet_info  # Pass through the entire wallet_info structure
+                'token_data': token_info,
+                'wallet': wallet_info,
+                'sessionId': session_id
             }
 
             logging.info(f"Executing trade with params: {swap_params}")
