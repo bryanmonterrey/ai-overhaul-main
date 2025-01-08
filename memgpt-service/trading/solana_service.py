@@ -231,15 +231,24 @@ class SolanaService:
                 'Content-Type': 'application/json'
             }
             
-            # Add session signature if available
-            if session_id := params.get('wallet', {}).get('signature'):
-                headers['Authorization'] = f'Bearer {session_id}'
-            elif session_id := params.get('sessionId'):
-                headers['Authorization'] = f'Bearer {session_id}'
+            # Extract session info for trade requests
+            if action == 'trade':
+                # Get original wallet signature for session verification
+                wallet_info = params.get('wallet', {})
+                original_signature = (
+                    wallet_info.get('credentials', {}).get('signature') or
+                    wallet_info.get('signature')
+                )
+                
+                if original_signature:
+                    headers['X-Trading-Session'] = original_signature
+                    logging.info(f"Using original signature for trade: {original_signature}")
+                else:
+                    logging.warning("No original signature found for trade request")
 
             logging.info(f"Making request to {self.agent_kit_url}")
             logging.info(f"Request payload: action={action}, params={params}")
-            logging.info(f"Added session signature to headers")
+            logging.info(f"Request headers: {headers}")
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -262,7 +271,7 @@ class SolanaService:
                     data = await response.json()
                     logging.info(f"Response data: {data}")
                     return data
-                        
+
         except Exception as e:
             logging.error(f"Agent-kit API call error: {str(e)}")
             raise
@@ -274,6 +283,12 @@ class SolanaService:
             wallet_info = params.get('wallet')
             if not wallet_info:
                 raise ValueError("No wallet info provided")
+
+            # Store original wallet signature before verification
+            original_signature = (
+                wallet_info.get('credentials', {}).get('signature') or
+                wallet_info.get('signature')
+            )
 
             # Get public key from wallet info using dictionary access
             public_key = (
@@ -297,9 +312,18 @@ class SolanaService:
                     'code': 'SESSION_ID_MISSING'
                 }
 
-            # Update both wallet and params with session ID
-            wallet_info['signature'] = session_id
-            wallet_info['credentials']['signature'] = session_id
+            # Create a new wallet info object with original signature preserved
+            trade_wallet_info = {
+                'publicKey': public_key,
+                'signature': original_signature,  # Keep original signature
+                'credentials': {
+                    'publicKey': public_key,
+                    'signature': original_signature,  # Keep original signature
+                    'signTransaction': True,
+                    'signAllTransactions': True,
+                    'connected': True
+                }
+            }
 
             # Verify token using the dedicated method
             try:
@@ -324,8 +348,8 @@ class SolanaService:
                 'tokenOut': token_address,
                 'slippageBps': params.get('slippage', 100),
                 'token_data': token_info,
-                'wallet': wallet_info,
-                'sessionId': session_id
+                'wallet': trade_wallet_info,  # Use wallet info with original signature
+                'sessionId': session_id  # Session ID only at root level
             }
 
             logging.info(f"Executing trade with params: {swap_params}")
