@@ -147,19 +147,21 @@ class SolanaService:
 
             # Try to update existing session first, if not exists then insert
             try:
-                response = await self.supabase.table('trading_sessions')\
+                # First try update
+                update_data = self.supabase.table('trading_sessions')\
                     .update(supabase_session)\
                     .eq('public_key', public_key)\
                     .execute()
                 
-                if not response.data:
+                if not update_data.data:
                     # No existing session, do an insert
                     supabase_session['public_key'] = public_key  # Add public_key for insert
-                    response = await self.supabase.table('trading_sessions')\
+                    insert_data = self.supabase.table('trading_sessions')\
                         .insert(supabase_session)\
                         .execute()
-                
-                data = response.data
+                    data = insert_data.data[0] if insert_data.data else None
+                else:
+                    data = update_data.data[0] if update_data.data else None
 
             except Exception as e:
                 logging.error(f"Session upsert error: {str(e)}")
