@@ -52,16 +52,16 @@ class TradingMemory:
             # Build execution data from various possible structures
             execution_data = {
                 'id': trade_id,
-                'params': json.dumps(params),  # Convert dict to JSON string
-                'result': json.dumps(data.get('result', {})),  # Convert dict to JSON string
+                'params': json.dumps(params),
+                'result': json.dumps(data.get('result', {})),
                 'signature': data.get('signature'),
                 'timestamp': data.get('timestamp') or datetime.now().isoformat(),
                 'status': data.get('status', 'completed' if data.get('signature') else 'failed'),
                 'error': data.get('result', {}).get('error'),
                 'token_in': data.get('tokenIn'),
                 'token_out': data.get('tokenOut'),
-                'amount_in': str(data.get('amountIn')),  # Convert to string
-                'amount_out': str(data.get('amountOut')),  # Convert to string
+                'amount_in': str(data.get('amountIn')),
+                'amount_out': str(data.get('amountOut')),
                 'tx_hash': data.get('txHash')
             }
             
@@ -74,8 +74,8 @@ class TradingMemory:
             # Log the execution data being stored
             logging.info(f"Storing trade execution: {json.dumps(execution_data, default=str)}")
             
-            # Create and execute the insert query
-            query = self.supabase.table('trade_executions').insert(execution_data).execute()
+            # Create the insert query WITHOUT executing it
+            query = self.supabase.table('trade_executions').insert(execution_data)
             
             # Execute the query with error handling
             success, result = await safe_supabase_execute(query, error_message="Failed to store trade execution")
@@ -86,9 +86,9 @@ class TradingMemory:
             
             logging.info(f"Successfully stored trade execution with ID: {trade_id}")
             
-            # If realtime monitor exists, notify it of the trade execution
-            if self.realtime_monitor:
-                await self.realtime_monitor.process_trade_execution(execution_data)
+            # Remove realtime monitor notification since it's not implemented
+            # if self.realtime_monitor:
+            #     await self.realtime_monitor.process_trade_execution(execution_data)
             
             return result
             

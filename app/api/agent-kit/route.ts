@@ -6,6 +6,7 @@ import { tradeExecution } from '../../trading/services/execution';
 import { ExtendedSolanaAgentKit } from '../../trading/services/extended-agent-kit';
 import { Keypair } from '@solana/web3.js';
 import { bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
+import { serverSupabase } from '../../lib/supabase/server-client';
 
 export const runtime = 'nodejs';
 
@@ -249,24 +250,22 @@ export async function POST(req: Request) {
         if (!params?.sessionSignature || !params?.publicKey) {
           return NextResponse.json({
             error: 'Session signature and public key required'
-          }, {
-            status: 400,
-            headers: {
-              'Content-Type': 'application/json'
-            }
-          });
+          }, { status: 400 });
         }
-        const kitSession = activeKits.get(params.publicKey);
-        const valid = kitSession?.signature === params.sessionSignature && 
-                     Date.now() <= (kitSession?.expiresAt || 0);
+        const { data, error } = await serverSupabase
+            .from('sessions')
+            .select()
+            .eq('wallet_address', params.publicKey)
+            .eq('is_active', true)
+            .gt('expires_at', new Date().toISOString())
+            .limit(1)
+            .maybeSingle();
+        
+        const valid = !!data && !error;
         
         return NextResponse.json({
-          valid,
-          timestamp: new Date().toISOString()
-        }, {
-          headers: {
-            'Content-Type': 'application/json'
-          }
+            valid,
+            timestamp: new Date().toISOString()
         });
 
       default:

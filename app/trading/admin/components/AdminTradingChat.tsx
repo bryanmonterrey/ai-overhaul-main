@@ -244,159 +244,143 @@ export function AdminTradingChat() {
 
   // Handle session creation/refresh
   const initializeOrRefreshSession = async () => {
-    if (!publicKey || !signMessage) {
-        throw new Error('Wallet not connected');
-    }
-
-    setIsSessionLoading(true);
     try {
-        // Create fresh signature for session
-        const message = new TextEncoder().encode("authorize_trading_session");
-        const signatureBytes = await signMessage(message);
-        const signature = bs58.encode(signatureBytes);
+      setIsSessionLoading(true);
+      if (!publicKey || !signMessage) return null;
 
-        console.log('Generated new session signature:', {
-            publicKey: publicKey.toString(),
-            signature: signature.slice(0, 10) + '...'
-        });
+      // Create session message
+      const message = new TextEncoder().encode("authorize_trading_session");
+      const signature = await signMessage(message);
+      const encodedSignature = bs58.encode(signature);
 
-        // Initialize session with agent-kit
-        const response = await fetch('/api/agent-kit', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                action: 'initSession',
-                params: {
-                    wallet: {
-                        publicKey: publicKey.toString(),
-                        signature,
-                        credentials: {
-                            publicKey: publicKey.toString(),
-                            signature,  // Use the fresh signature
-                            signTransaction: !!signTransaction,
-                            signAllTransactions: !!signAllTransactions,
-                            connected: true
-                        }
-                    }
-                }
-            })
-        });
+      // Store session in database
+      const { data: session, error } = await supabase
+        .from('sessions')
+        .insert({
+          wallet_address: publicKey.toString(),
+          signature: encodedSignature,
+          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+          user_agent: navigator.userAgent,
+          is_active: true
+        })
+        .select()
+        .single();
 
-        const result = await response.json();
-        console.log('Session initialization result:', result);
+      if (error) {
+        throw error;
+      }
 
-        if (!result.success) {
-            throw new Error(result.error || 'Session initialization failed');
-        }
+      // Convert database session to TradeSession format
+      const tradeSession: TradeSession = {
+        publicKey: session.wallet_address,
+        signature: session.signature,
+        timestamp: new Date(session.created_at).getTime(),
+        expiresAt: new Date(session.expires_at).getTime()
+      };
 
-        const session: TradeSession = {
-            publicKey: publicKey.toString(),
-            signature: result.sessionSignature || signature,  // Use returned signature or fallback to our signature
-            timestamp: Date.now(),
-            expiresAt: result.expiresAt || Date.now() + (24 * 60 * 60 * 1000)
-        };
-
-        setActiveSession(session);
-        return session;
+      setActiveSession(tradeSession);
+      return tradeSession;
 
     } catch (error) {
-        console.error('Session initialization error:', error);
-        toast({
-            title: "Session Error",
-            description: error instanceof Error ? error.message : "Failed to initialize session",
-            variant: "destructive",
-        });
-        return null;
+      console.error('Session initialization error:', error);
+      toast({
+        title: "Session Error",
+        description: error instanceof Error ? error.message : "Failed to initialize session",
+        variant: "destructive"
+      });
+      return null;
     } finally {
-        setIsSessionLoading(false);
+      setIsSessionLoading(false);
     }
   };
 
   const handleTradeExecution = async (tradeData: EnhancedTradeExecutionData) => {
     try {
-        // Check wallet connection and signing capabilities
-        if (!publicKey || !signMessage || !signTransaction || !signAllTransactions || !connected) {
-            toast({
-                title: "Wallet Required",
-                description: "Please connect your wallet with signing capabilities to execute trades",
-                variant: "destructive"
-            });
-            setVisible(true);
-            return;
-        }
-
-        // Always get a fresh session before trade
-        const session = await initializeOrRefreshSession();
-        if (!session) {
-            throw new Error('Failed to initialize trading session');
-        }
-
-        // Create fresh signature for the trade
-        const message = new TextEncoder().encode("authorize_trading_session");
-        const signatureBytes = await signMessage(message);
-        const tradeSignature = bs58.encode(signatureBytes);
-
-        console.log('Trade execution signature:', {
-            publicKey: publicKey.toString(),
-            signature: tradeSignature.slice(0, 10) + '...'
-        });
-
-        // Execute trade with fresh signature
-        const result = await aiTradingService.executeManualTrade({
-            token: tradeData.token,
-            side: tradeData.side,
-            amount: tradeData.amount,
-            price: tradeData.price,
-            wallet: {
-                publicKey,
-                signTransaction,
-                signAllTransactions,
-                timestamp: Date.now(),
-                signature: tradeSignature  // Use fresh signature
-            } as TradeWalletInfo
-        });
-
-        if (result.signature) {
-            console.log('Transaction signature:', result.signature);
-            
-            if (tradeData.market_analysis) {
-                toast({
-                    title: "Market Analysis",
-                    description: `Current trend: ${tradeData.market_analysis.price_trend}`,
-                    variant: "default"
-                });
-            }
-
-            toast({
-                title: "Trade Executed",
-                description: `Successfully executed ${tradeData.side} trade for ${tradeData.amount} ${tradeData.token}. Signature: ${result.signature.slice(0, 8)}...`,
-            });
-        } else {
-            throw new Error('Trade execution failed: No signature returned');
-        }
-
-    } catch (error) {
-        console.error('Error executing trade:', error);
-        
-        // Clear session if it's invalid
-        if (error instanceof Error && error.message.includes('session')) {
-            setActiveSession(null);
-            // Update session status in database instead of just clearing local state
-            if (activeSession) {
-                await supabase
-                    .from('sessions')
-                    .update({ is_active: false })
-                    .eq('signature', activeSession.signature);
-            }
-        }
-
+      // Check wallet connection and signing capabilities
+      if (!publicKey || !signTransaction || !signAllTransactions || !connected) {
         toast({
-            title: "Trade Failed",
-            description: error instanceof Error ? error.message : "Failed to execute trade. Please try again.",
-            variant: "destructive",
+          title: "Wallet Required",
+          description: "Please connect your wallet with signing capabilities to execute trades",
+          variant: "destructive"
         });
+        setVisible(true);
+        return;
+      }
+  
+      // Initialize or verify session
+      let session = activeSession;
+      if (!session || Date.now() > session.expiresAt) {
+        session = await initializeOrRefreshSession();
+        if (!session) {
+          throw new Error('Failed to initialize trading session');
+        }
+      }
+  
+      // Handle trade confirmation if required
+      if (tradeData.requires_confirmation) {
+        const confirmed = await confirmDialog({
+          title: "Confirm High Risk Trade",
+          message: `This trade has been flagged as high risk. ${tradeData.market_analysis?.recommendation || ''}`,
+          confirmText: "Execute Trade",
+          cancelText: "Cancel"
+        });
+        
+        if (!confirmed) return;
+      }
+      // Execute trade with session
+      const result = await aiTradingService.executeManualTrade({
+        token: tradeData.token,
+        side: tradeData.side,
+        amount: tradeData.amount,
+        price: tradeData.price,
+        wallet: {
+          publicKey,
+          signTransaction,
+          signAllTransactions,
+          timestamp: Date.now(),
+          signature: session.signature
+        } as TradeWalletInfo
+      });
+  
+      if (result.signature) {
+        console.log('Transaction signature:', result.signature);
+        
+        if (tradeData.market_analysis) {
+          toast({
+            title: "Market Analysis",
+            description: `Current trend: ${tradeData.market_analysis.price_trend}`,
+            variant: "default"
+          });
+        }
+  
+        toast({
+          title: "Trade Executed",
+          description: `Successfully executed ${tradeData.side} trade for ${tradeData.amount} ${tradeData.token}. Signature: ${result.signature.slice(0, 8)}...`,
+        });
+      } else {
+        throw new Error('Trade execution failed: No signature returned');
+      }
+  
+    } catch (error) {
+      console.error('Error executing trade:', error);
+      
+      // Clear session if it's invalid
+      if (error instanceof Error && error.message.includes('session')) {
+        setActiveSession(null);
+        // Update session status in database instead of just clearing local state
+        if (activeSession) {
+          await supabase
+            .from('sessions')
+            .update({ is_active: false })
+            .eq('signature', activeSession.signature);
+        }
+      }
+  
+      toast({
+        title: "Trade Failed",
+        description: error instanceof Error ? error.message : "Failed to execute trade. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 

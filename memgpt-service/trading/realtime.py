@@ -58,7 +58,7 @@ class RealTimeMonitor:
         }))
         self.risk_helpers = RiskHelpers()
         self.supabase = None  # Will be set by the trading handler
-        self.solana_service = SolanaService()
+        self.solana_service = None  # Remove SolanaService initialization
         self.wallet = None
         
         # Initialize monitoring state
@@ -75,6 +75,10 @@ class RealTimeMonitor:
             })
         }
 
+    def set_solana_service(self, service):
+        """Set the solana service instance"""
+        self.solana_service = service
+
     def set_ws_handler(self, ws_handler):
         """Set WebSocket handler"""
         self.ws_handler = ws_handler
@@ -82,6 +86,10 @@ class RealTimeMonitor:
     def set_supabase_client(self, supabase_client):
         """Set Supabase client for database operations and realtime updates"""
         self.supabase = supabase_client
+
+    def set_wallet(self, wallet_info: Dict[str, Any]):
+        """Set wallet information"""
+        self.wallet = wallet_info
 
     async def start_monitoring(self):
         """Start the monitoring loop"""
@@ -217,42 +225,19 @@ class RealTimeMonitor:
     async def setup_wallet(self, private_key: str = None, wallet_info: Dict = None):
         """Initialize wallet for trading"""
         try:
-            class ReadOnlyWallet:
-                def __init__(self, public_key, credentials=None):
-                    self.public_key = public_key
-                    self.connected = True
-                    
-                    async def generate_readonly_session_signature(pub_key: str) -> str:
-                        """Generate a deterministic but secure signature for read-only sessions"""
-                        message = f"readonly-session-{pub_key}".encode()
-                        hash_obj = hashlib.sha256(message)
-                        return b58encode(hash_obj.digest()).decode()
-                    
-                    if credentials:
-                        self.credentials = credentials
-                    else:
-                        session_signature = asyncio.run(generate_readonly_session_signature(public_key))
-                        self.credentials = {
-                            'publicKey': public_key,
-                            'signature': session_signature,  # Use generated signature
-                            'signTransaction': True,
-                            'signAllTransactions': True,
-                            'connected': True
-                        }
-
             # Check for wallet_info first
             if wallet_info:
                 # If we have credentials in wallet_info
                 if credentials := wallet_info.get('credentials'):
-                    pub_key = credentials.get('publicKey')
+                    pub_key = credentials.get('publicKey')  # Note: publicKey not public_key
                     if pub_key:
-                        self.wallet = ReadOnlyWallet(pub_key, credentials)
-                        logging.info(f"Initialized read-only wallet with public key: {pub_key} and credentials")
+                        self.wallet = wallet_info  # Store the entire wallet_info
+                        logging.info(f"Initialized wallet with public key: {pub_key} and credentials")
                         return True
                 # If we have direct publicKey
-                elif pub_key := wallet_info.get('publicKey'):
-                    self.wallet = ReadOnlyWallet(pub_key)
-                    logging.info(f"Initialized read-only wallet with public key: {pub_key}")
+                elif pub_key := wallet_info.get('publicKey'):  # Note: publicKey not public_key
+                    self.wallet = wallet_info  # Store the entire wallet_info
+                    logging.info(f"Initialized wallet with public key: {pub_key}")
                     return True
                 
                 logging.error(f"Invalid wallet info structure: {wallet_info}")
@@ -269,7 +254,16 @@ class RealTimeMonitor:
                     from base58 import b58decode
                     key_bytes = b58decode(private_key)
                         
-                self.wallet = Keypair.from_secret_key(key_bytes)
+                keypair = Keypair.from_secret_key(key_bytes)
+                self.wallet = {
+                    'publicKey': str(keypair.public_key),
+                    'credentials': {
+                        'publicKey': str(keypair.public_key),
+                        'signTransaction': True,
+                        'signAllTransactions': True,
+                        'connected': True
+                    }
+                }
                 return True
 
             return False
@@ -278,33 +272,21 @@ class RealTimeMonitor:
             return False
 
     async def execute_solana_trade(self, params: dict) -> dict:
+        """Execute a Solana trade"""
         try:
+            # Use the wallet from params if provided, otherwise use the stored wallet
+            wallet_info = params.get('wallet')
+            if not wallet_info:
+                raise ValueError("No wallet provided for trade execution")
+
             trade_id = str(uuid.uuid4())
             
-            # Setup wallet from params if provided
-            if wallet_info := params.get('wallet'):
-                success = await self.setup_wallet(wallet_info=wallet_info)
-                if not success:
-                    logging.error("Failed to setup wallet from provided info")
-                    return {
-                        'success': False,
-                        'error': 'Failed to initialize wallet',
-                        'user_message': 'Could not connect to your wallet. Please try again.'
-                    }
-                    
-            if not self.wallet:
-                return {
-                    'success': False,
-                    'error': 'Wallet not initialized',
-                    'user_message': 'Please connect your wallet before trading.'
-                }
-
-            # Add wallet info to trade params
+            # Add wallet info to trade params - use dictionary access
             trade_params = {
                 **params,  # Keep existing params
                 'wallet': {
-                    'publicKey': self.wallet.credentials['publicKey'],  # Use credentials directly
-                    'credentials': self.wallet.credentials  # Pass full credentials
+                    'publicKey': wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey'),
+                    'credentials': wallet_info.get('credentials', {}),
                 }
             }
 
@@ -470,6 +452,21 @@ class RealTimeMonitor:
         """Get largest position details"""
         # Implementation needed
         pass
+
+    async def process_trade_execution(self, execution_data: dict) -> None:
+        """Process a trade execution and notify relevant systems"""
+        try:
+            logging.info(f"Processing trade execution: {execution_data.get('id')}")
+            
+            # Store the execution in trading memory
+            if hasattr(self, 'trading_memory'):
+                await self.trading_memory.store_trade_execution(execution_data)
+            
+            # Add any additional processing here (e.g., notifications, analytics)
+            
+        except Exception as e:
+            logging.error(f"Error processing trade execution: {str(e)}")
+            # Don't raise the error to avoid breaking the trade flow
 
     def __del__(self):
     # Ensure clean shutdown

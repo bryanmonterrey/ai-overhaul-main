@@ -153,6 +153,7 @@ class MemGPTService:
             raise ValueError("Either OPENAI_API_KEY or ANTHROPIC_API_KEY must be provided")
 
         try:
+            # Initialize core services first
             self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
             print("Supabase client initialized successfully")
 
@@ -160,14 +161,14 @@ class MemGPTService:
             test = self.supabase.table('memories').select('*').limit(1).execute()
             print("Supabase connection tested successfully")
 
-            # Initialize WebSocket event handler early
+            # Initialize WebSocket handler early
             self.ws_handler = WebSocketEventHandler()
             print("WebSocket handler initialized")
 
             # Initialize SolanaService first
-            self.solana_service = SolanaService() 
+            self.solana_service = SolanaService(self.supabase)
             print("Solana service initialized")
-                
+
             # Initialize RealTimeMonitor with configuration
             self.realtime_monitor = RealTimeMonitor({
                 "risk_thresholds": {
@@ -188,8 +189,22 @@ class MemGPTService:
 
             # Set up RealTimeMonitor dependencies
             self.realtime_monitor.set_supabase_client(self.supabase)
-            self.realtime_monitor.solana_service = self.solana_service
+            self.realtime_monitor.set_solana_service(self.solana_service)
             self.realtime_monitor.set_ws_handler(self.ws_handler)
+            print("RealTime monitor dependencies configured")
+
+            # Create default wallet info
+            default_wallet_info = {
+                "publicKey": None,  # Will be set when user connects
+                "credentials": {
+                    "publicKey": None,
+                    "signature": None,
+                    "signTransaction": True,
+                    "signAllTransactions": True,
+                    "connected": False
+                }
+            }
+            self.realtime_monitor.set_wallet(default_wallet_info)
             print("RealTime monitor dependencies configured")
 
             # Create LLM config

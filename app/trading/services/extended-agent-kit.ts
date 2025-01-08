@@ -53,9 +53,9 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
         } 
     }): Promise<SessionResponse> {
         try {
-            // Use credentials signature if available
-            const signature = params.wallet.credentials?.signature || params.wallet.signature;
-            const publicKey = params.wallet.credentials?.publicKey || params.wallet.publicKey;
+            // Use direct signature first, then credentials signature
+            const signature = params.wallet.signature || params.wallet.credentials?.signature;
+            const publicKey = params.wallet.publicKey || params.wallet.credentials?.publicKey;
             
             if (!signature) {
                 return {
@@ -65,33 +65,36 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
                 };
             }
 
-            console.log('Session initialization attempt:', {
-                publicKey,
-                signaturePrefix: signature.slice(0, 10) + '...',
-                hasCredentials: !!params.wallet.credentials
-            });
+            // Create a new session first
+            const { data: sessionData, error: insertError } = await this.supabase
+                .from('sessions')
+                .insert({
+                    wallet_address: publicKey,
+                    signature: signature,
+                    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+                    is_active: true,
+                    user_agent: 'trading-bot',
+                    tag: 'trading_session'
+                })
+                .select()
+                .maybeSingle();
 
-            // For non-readonly mode, verify the signature
-            const isValid = await this.verifyWalletSignature(publicKey, signature);
-
-            if (!isValid) {
-                console.error('Session signature verification failed:', {
-                    publicKey,
-                    signaturePrefix: signature.slice(0, 10) + '...'
-                });
+            if (insertError) {
+                console.error('Session creation error:', insertError);
                 return {
                     success: false,
-                    error: "Invalid signature",
-                    code: "INVALID_SIGNATURE"
+                    error: insertError.message,
+                    code: insertError.code
                 };
             }
 
             return {
                 success: true,
-                sessionId: publicKey,
+                sessionId: sessionData?.id,
                 sessionSignature: signature,
                 timestamp: new Date().toISOString()
             };
+
         } catch (error) {
             console.error('Session initialization error:', error);
             return {

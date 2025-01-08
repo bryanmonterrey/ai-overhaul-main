@@ -2,14 +2,25 @@
 from typing import Dict, Any, Optional
 import logging
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import aiohttp
 import os
+import json
 
 class SolanaService:
     """Solana utilities that coordinate with frontend agent-kit"""
-    def __init__(self):
+    def __init__(self, supabase_client=None):
+        # Initialize Supabase client
+        self.supabase = supabase_client
+        if not self.supabase:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL")
+            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            if not url or not key:
+                raise ValueError("Missing Supabase credentials")
+            self.supabase = create_client(url, key)
+
         # Ensure RPC URL is properly formatted
         default_rpc = 'https://api.mainnet-beta.solana.com'
         rpc_url = os.getenv('NEXT_PUBLIC_RPC_URL', default_rpc)
@@ -89,37 +100,66 @@ class SolanaService:
             raise
 
     async def _verify_session(self, wallet_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Verify and initialize trading session if needed"""
+        """Verify and initialize trading session"""
         try:
-            # First try the new location
-            session_proof = wallet_info.get('signature')
-            if not session_proof:
-                # Try the legacy location
-                session_proof = wallet_info.get('credentials', {}).get('sessionProof')
-                
-            if not session_proof:
-                # Initialize new session
-                try:
-                    session_result = await self.init_trading_session(wallet_info)
-                    if not session_result.get('success'):
-                        if session_result.get('error') == 'session_signature_required':
-                            return {
-                                'success': False,
-                                'error': 'session_required',
-                                'session_message': session_result.get('session_message'),
-                                'user_message': 'Please sign the message to start your trading session'
-                            }
-                        raise ValueError(f"Failed to initialize session: {session_result.get('error')}")
-                            
-                    # Update wallet credentials with session info    
-                    if session_token := session_result.get('sessionId'):
-                        wallet_info['signature'] = session_token  # Store directly in wallet_info
-                        if isinstance(wallet_info.get('credentials'), dict):
-                            wallet_info['credentials']['signature'] = session_token  # Also store in credentials for backwards compatibility
-                        logging.info("Added session token to wallet info")
-                except Exception as e:
-                    logging.error(f"Failed to initialize session: {str(e)}")
-                    raise ValueError(f"Session initialization failed: {str(e)}")
+            # Log incoming wallet info for debugging
+            logging.info(f"Verifying session with wallet info: {json.dumps(wallet_info, default=str)}")
+            
+            # Extract credentials in the format the API expects
+            public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
+            signature = wallet_info.get('credentials', {}).get('signature')
+
+            if not public_key or not signature:
+                return {
+                    'success': False,
+                    'error': 'Missing public key or signature',
+                    'code': 'MISSING_CREDENTIALS'
+                }
+
+            # Format exactly as agent-kit/route.ts expects for verifySession
+            init_params = {
+                'wallet': {
+                    'publicKey': public_key,
+                    'signature': signature,
+                    'credentials': {
+                        'publicKey': public_key,
+                        'signature': signature,
+                        'signTransaction': True,
+                        'signAllTransactions': True,
+                        'connected': True
+                    }
+                }
+            }
+
+            logging.info(f"Initializing session with params: {json.dumps(init_params, default=str)}")
+            
+            # First store the session in Supabase - Fix datetime serialization
+            current_time = datetime.now()
+            current_ms = int(current_time.timestamp() * 1000)  # For bigint columns
+
+            supabase_session = {
+                'public_key': public_key,
+                'signature': signature,
+                'expires_at': current_ms + (24 * 60 * 60 * 1000),  # bigint
+                'timestamp': current_ms,                            # bigint
+                'created_at': current_time.isoformat(),            # timestamptz
+                'updated_at': current_time.isoformat()             # timestamptz
+            }
+            
+            # Store in trading_sessions table - Fix await syntax
+            response = await self.supabase.table('trading_sessions').insert(supabase_session).execute()
+            data = response.data
+            
+            # Call initSession
+            session_result = await self._call_agent_kit('initSession', init_params)
+
+            if not session_result.get('success'):
+                logging.error(f"Session verification failed: {session_result}")
+                return {
+                    'success': False,
+                    'error': session_result.get('error', 'Session verification failed'),
+                    'code': session_result.get('code', 'SESSION_VERIFICATION_FAILED')
+                }
 
             return {
                 'success': True,
@@ -131,7 +171,7 @@ class SolanaService:
             return {
                 'success': False,
                 'error': str(e),
-                'user_message': 'Failed to verify trading session'
+                'code': 'SESSION_VERIFICATION_ERROR'
             }
 
     async def _verify_token(self, asset: str) -> Dict[str, Any]:
@@ -190,26 +230,15 @@ class SolanaService:
                         'source': 'unverified_address'
                     }
 
-                # If we get here, token couldn't be verified at all
-                raise ValueError(f"Token not found: {asset}")
+                raise ValueError(f"Token {asset} not found")
 
-            except Exception as api_error:
-                logging.error(f"Jupiter API error: {str(api_error)}")
-                
-                # If it's an address, we can still proceed unverified
-                if len(asset) == 44:
-                    return {
-                        'symbol': asset[:8],
-                        'address': asset,
-                        'verified': False,
-                        'decimals': 9,
-                        'source': 'fallback_address'
-                    }
-                raise  # Re-raise if not an address
+            except Exception as e:
+                logging.error(f"Error verifying token: {str(e)}")
+                raise
 
         except Exception as e:
             logging.error(f"Token verification error: {str(e)}")
-            raise ValueError(f"Could not verify token: {asset}")
+            raise
 
     async def _call_agent_kit(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -264,13 +293,25 @@ class SolanaService:
             raise
 
     async def execute_swap(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a swap transaction"""
         try:
-            # Verify session first if wallet info is provided
-            if wallet_info := params.get('wallet'):
-                session_result = await self._verify_session(wallet_info)
-                if not session_result['success']:
-                    return session_result
-                params['wallet'] = session_result['wallet_info']
+            # Verify wallet info
+            wallet_info = params.get('wallet')
+            if not wallet_info:
+                raise ValueError("No wallet info provided")
+
+            # Get public key from wallet info using dictionary access
+            public_key = (
+                wallet_info.get('publicKey') or 
+                wallet_info.get('credentials', {}).get('publicKey')
+            )
+            if not public_key:
+                raise ValueError("No public key found in wallet info")
+
+            # Verify session
+            session_result = await self._verify_session(wallet_info)
+            if not session_result.get('success'):
+                return session_result
 
             # Verify token using the dedicated method
             try:
@@ -294,17 +335,13 @@ class SolanaService:
                 'tokenIn': self.token_addresses['SOL'],
                 'tokenOut': token_address,
                 'slippageBps': params.get('slippage', 100),
-                'token_data': token_info  # Use verified token info
+                'token_data': token_info,  # Use verified token info
+                'wallet': wallet_info  # Pass through the entire wallet_info structure
             }
-            
-            # Pass through wallet info without modification
-            if wallet_info := params.get('wallet'):
-                swap_params['wallet'] = wallet_info
 
             logging.info(f"Executing trade with params: {swap_params}")
             result = await self._call_agent_kit('trade', swap_params)
 
-            # Add this check here
             if not result.get('success'):
                 return {
                     'success': False,
@@ -312,17 +349,8 @@ class SolanaService:
                     'details': result,
                     'user_message': result.get('user_message', 'Failed to execute trade')
                 }
-            
-            # Return successful response with complete trade info
-            return {
-                'success': True,
-                'signature': result.get('signature'),
-                'params': params,
-                'result': result,
-                'token_address': token_address,
-                'token_data': token_info,  # Use verified token info consistently
-                'timestamp': datetime.now().isoformat()
-            }
+
+            return result
 
         except Exception as e:
             logging.error(f"Swap execution error: {str(e)}")

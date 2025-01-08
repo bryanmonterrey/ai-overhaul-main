@@ -4,60 +4,48 @@ import { createClient } from '@supabase/supabase-js';
 import { PublicKey } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 
-export async function verifySession(
-  publicKey: string,
-  sessionSignature: string
-): Promise<boolean> {
+export async function verifySession(wallet: WalletInfo): Promise<VerificationResult> {
   try {
-    // Get session from Supabase
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+    // Get current time in milliseconds
+    const now = Date.now();
+    const expires = now + (24 * 60 * 60 * 1000); // 24 hours in milliseconds
 
-    const { data: session, error } = await supabase
+    // Store session in Supabase
+    const { data, error } = await supabase
       .from('trading_sessions')
-      .select('*')
-      .eq('public_key', publicKey)
+      .insert({
+        public_key: wallet.publicKey,
+        signature: wallet.credentials.signature,
+        expires_at: expires,  // Unix timestamp in milliseconds
+        timestamp: now,       // Unix timestamp in milliseconds
+        created_at: now,      // Unix timestamp in milliseconds
+        updated_at: now       // Unix timestamp in milliseconds
+      })
+      .select()
       .single();
 
-    if (error || !session) {
-      console.error('Session fetch error:', error);
-      return false;
+    if (error) {
+      console.error('Session verification error:', error);
+      return {
+        success: false,
+        error: error.message,
+        code: 'SESSION_VERIFICATION_ERROR'
+      };
     }
 
-    // Verify session is not expired
-    if (Date.now() > session.expires_at) {
-      // Clean up expired session
-      await supabase
-        .from('trading_sessions')
-        .delete()
-        .eq('public_key', publicKey);
-      return false;
-    }
+    return {
+      success: true,
+      sessionId: data.id,
+      expiresAt: expires
+    };
 
-    // Verify signature matches
-    const storedSignature = session.signature;
-    if (sessionSignature !== storedSignature) {
-      return false;
-    }
-
-    // If session is close to expiry (within 1 hour), refresh it
-    const oneHour = 60 * 60 * 1000;
-    if (session.expires_at - Date.now() < oneHour) {
-      await supabase
-        .from('trading_sessions')
-        .update({
-          expires_at: Date.now() + (24 * 60 * 60 * 1000),
-          updated_at: new Date().toISOString()
-        })
-        .eq('public_key', publicKey);
-    }
-
-    return true;
   } catch (error) {
     console.error('Session verification error:', error);
-    return false;
+    return {
+      success: false,
+      error: String(error),
+      code: 'SESSION_VERIFICATION_ERROR'
+    };
   }
 }
 

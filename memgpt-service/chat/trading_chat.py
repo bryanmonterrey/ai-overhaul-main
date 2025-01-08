@@ -167,19 +167,18 @@ class TradingChat:
                 }
 
             # Handle confirmation - use last trade parameters
-            if (command_type == "confirm" or 
-                (command_type == "trade" and not analysis.get("parameters"))) and self.last_trade:
+            if message.lower().strip() in ["confirm", "confirm trade"]:
+                if not self.last_trade:
+                    return {
+                        "response": "No previous trade found to confirm. Please specify the trade details first.",
+                        "error": "No trade to confirm"
+                    }
                 print("Using last trade parameters:", self.last_trade)
                 analysis["parameters"] = {
-                    **self.last_trade,
+                    **self.last_trade,  # Include all previous trade parameters
                     "wallet": wallet_info  # Add wallet info to confirmation
                 }
                 command_type = "trade"
-            elif command_type == "confirm" and not self.last_trade:
-                return {
-                    "response": "No previous trade found to confirm. Please specify the trade details first.",
-                    "error": "No trade to confirm"
-                }
 
             # Add wallet info to parameters if provided
             if wallet_info:
@@ -189,12 +188,13 @@ class TradingChat:
                     "wallet": wallet_info
                 }
 
-            # Store trade parameters for future confirmation
+            # Store trade parameters for future confirmation if this is a new trade
             if command_type == "trade" and analysis.get("parameters"):
                 self.last_trade = {
                     k: v for k, v in analysis["parameters"].items() 
-                    if k != "wallet"  # Don't store wallet info in last_trade
+                    if k not in ['wallet']  # Don't store wallet info
                 }
+                print("Stored trade parameters:", self.last_trade)
 
             # Get command handler using lowercase command type
             handler = self.command_handlers.get(command_type)
@@ -206,10 +206,10 @@ class TradingChat:
                     "error": "Invalid command type"
                 }
 
-            # Execute command with admin privileges
-            print("Executing handler with parameters:", analysis["parameters"])
+            # Execute command with parameters and admin privileges
+            print("Executing handler with parameters:", analysis.get("parameters", {}))
             result = await handler(
-                analysis["parameters"],
+                analysis.get("parameters", {}),
                 is_admin=True
             )
             print("Handler result:", result)
@@ -226,203 +226,27 @@ class TradingChat:
                 "error": str(e)
             }
     
-    async def _handle_trade_command(
-    self,
-    params: Dict[str, Any],
-    is_admin: bool,
-    user_address: Optional[str] = None
-) -> Dict[str, Any]:
-        """Handle trade execution commands"""
+    async def _handle_trade_command(self, params: dict, is_admin: bool = False) -> dict:
         try:
+            # Log the incoming parameters
             logging.info(f"Starting trade execution with params: {params}")
-
-            # Setup wallet from request context first
-            wallet_info = params.get('wallet') or {}
             
-            # Check for trading session signature
-            if not wallet_info.get('credentials', {}).get('signature'):
-                session = getattr(self.realtime_monitor, 'current_session', None)
-                if session and hasattr(session, 'signature'):
-                    if not isinstance(wallet_info.get('credentials'), dict):
-                        wallet_info['credentials'] = {}
-                    wallet_info['credentials']['signature'] = session.signature
-                    params['wallet'] = wallet_info
-                    logging.info("Added session signature from realtime monitor")
-            
-            # Setup wallet from request context first
-            wallet_info = params.get('wallet') or {}
-            if not self.realtime_monitor.wallet:
-                try:
-                    # Try to setup wallet with full wallet_info dict first
-                    wallet_setup_success = await self.realtime_monitor.setup_wallet(wallet_info=wallet_info)
-                    
-                    if not wallet_setup_success:
-                        logging.error("Failed to setup wallet with provided wallet info")
-                        return {
-                            'success': False,
-                            'error': 'Failed to initialize wallet',
-                            'user_message': 'Could not connect to your wallet. Please try again.'
-                        }
-                except Exception as e:
-                    logging.error(f"Error setting up wallet: {str(e)}")
-                    return {
-                        'success': False,
-                        'error': 'Wallet setup error',
-                        'user_message': 'Failed to connect wallet. Please try again.'
-                    }
-
-            if not self.realtime_monitor.wallet:
-                return {
-                    'success': False,
-                    'error': 'Wallet not initialized',
-                    'user_message': 'Please connect your wallet before trading.'
-                }
-
-            # Add wallet info to trade params for downstream use
-            try:
-                params['wallet'] = {
-                    'publicKey': str(self.realtime_monitor.wallet.public_key),
-                    'credentials': getattr(self.realtime_monitor.wallet, 'credentials', {
-                        'publicKey': str(self.realtime_monitor.wallet.public_key),
-                        'signTransaction': True,
-                        'signAllTransactions': True,
-                        'connected': True
-                    })
-                }
-
-                if wallet_info and hasattr(wallet_info, 'get') and wallet_info.get('signature'):
-                    params['wallet']['credentials']['signature'] = wallet_info['signature']
-
-            except Exception as e:
-                logging.error(f"Error formatting wallet info: {str(e)}")
-                return {
-                    'success': False,
-                    'error': 'Failed to process wallet info',
-                    'user_message': 'There was an issue with your wallet connection. Please try reconnecting.'
-                }
-
-            # Rest of your existing parameter validation
-            required_params = ['asset', 'amount', 'side']
-            missing_params = [p for p in required_params if not params.get(p)]
-            if missing_params:
-                logging.error(f"Missing parameters: {missing_params}")
-                return {
-                    "success": False,
-                    "error": f"Missing required parameters: {', '.join(missing_params)}"
-                }
-
-            # Your existing token info handling
-            try:
-                token_data = await self.solana_service._call_agent_kit('getTokenData', {
-                    'symbol': params['asset'],
-                    'discover': True
-                })
-                
-                if not token_data:
-                    return {
-                        'success': False,
-                        'error': f"Could not verify token: {params['asset']}",
-                        'user_message': f"I couldn't verify the token {params['asset']}. Please check the symbol/address and try again."
-                    }
-
-                params['token_data'] = token_data
-                params['asset'] = token_data['symbol']  # Use verified symbol
-
-            except Exception as token_error:
-                logging.error(f"Error verifying token: {str(token_error)}")
-                logging.info("Proceeding with unverified token")
-
-            # Your existing amount calculation logic
-            input_amount = float(params['amount'])
-            if params['side'] == 'buy' and params.get('asset').upper() != 'SOL':
-                input_amount = float(params['amount'])
-                logging.info(f"Using SOL input amount: {input_amount}")
+            # Execute trade through realtime monitor
+            if self.realtime_monitor:
+                logging.info("Executing admin trade through realtime monitor")
+                # Call execute_trade instead of directly accessing execute_solana_trade
+                result = await self.execute_trade(params)
+                return result
             else:
-                try:
-                    token_price = await self.solana_service.get_token_price(params['asset'])
-                    input_amount = float(params['amount']) * float(token_price)
-                    logging.info(f"Calculated amount in SOL: {input_amount}")
-                except Exception as e:
-                    logging.error(f"Error calculating token amount: {e}")
-                    input_amount = float(params['amount'])
-
-            # Your existing trade parameter formatting
-            trade_params = {
-                'asset': params['asset'],
-                'amount': input_amount,
-                'side': params['side'].lower(),
-                'slippage': params.get('slippage', 100),
-                'useMev': params.get('useMev', True),
-                'receive_asset': self.solana_service.token_addresses.get('SOL'),
-                'token_data': params.get('token_data'),
-                'wallet': params.get('wallet')  # This now includes the credentials
-            }
-            
-            logging.info(f"Formatted trade parameters: {trade_params}")
-
-            # Your existing trade execution logic
-            if is_admin:
-                try:
-                    logging.info("Executing admin trade through realtime monitor")
-                    result = await self.realtime_monitor.execute_solana_trade(trade_params)
-                    logging.info(f"Trade execution result: {result}")
-                    
-                    try:
-                        execution_data = {
-                            "type": "trade_execution",  # Changed from trade_attempt
-                            "tokenIn": trade_params.get('receive_asset'),
-                            "tokenOut": trade_params.get('asset'),
-                            "amountIn": str(trade_params.get('amount')),
-                            "amountOut": "0",  # Will be updated by actual execution
-                            "status": "pending",
-                            "txHash": None,
-                            "data": {
-                                **trade_params,
-                                "original_amount": params['amount'],
-                                "wallet_address": params.get('wallet', {}).get('publicKey')
-                            },
-                            "result": result,
-                            "timestamp": datetime.now().isoformat()
-                        }
-                        await self.trading_memory.store_trade_execution(execution_data)
-                        logging.info("Trade execution stored in memory")
-                    except Exception as mem_error:
-                        logging.error(f"Error storing trade execution: {str(mem_error)}")
-
-                    if result.get('success'):
-                        response = {
-                            **result,
-                            'formatted_amount': params['amount'],
-                            'token_symbol': params['asset'].upper(),
-                            'token_data': params.get('token_data'),
-                            'wallet_address': params.get('wallet', {}).get('publicKey'),
-                            'user_message': f"Successfully executed {params['side']} trade for {params['amount']} {params['asset'].upper()}"
-                        }
-                        
-                        if params.get('token_data') and not params['token_data'].get('verified'):
-                            response['warnings'] = ["This token is not verified. Please verify the contract address."]
-                    else:
-                        response = {
-                            **result,
-                            'user_message': f"Trade failed: {result.get('error', 'Unknown error')}"
-                        }
-
-                    return response
-
-                except Exception as exec_error:
-                    logging.error(f"Trade execution error: {str(exec_error)}")
-                    raise
-            else:
-                logging.info(f"Executing holder trade for address: {user_address}")
-                return await self.letta.execute_holder_trade(user_address, trade_params)
+                raise ValueError("No trade executor available")
 
         except Exception as e:
             error_msg = f"Trade execution error: {str(e)}"
             logging.error(error_msg)
             return {
-                "success": False,
-                "error": error_msg,
-                'user_message': f"Failed to execute trade: {str(e)}"
+                'success': False,
+                'error': error_msg,
+                'user_message': 'Failed to execute trade due to an internal error.'
             }
             
     async def process_holder_message(
@@ -589,3 +413,43 @@ class TradingChat:
             logging.info(f"{stage}: Full wallet info: {json.dumps(wallet_info, default=str)}")
         except Exception as e:
             logging.error(f"Error logging wallet info at {stage}: {str(e)}")
+
+    async def execute_trade(self, params: dict) -> dict:
+        try:
+            # Add debug logging
+            logging.info(f"Execute trade called with params: {json.dumps(params, default=str)}")
+            
+            # Format wallet info correctly
+            wallet_info = params.get('wallet')
+            if not wallet_info:
+                raise ValueError("No wallet info provided")
+
+            logging.info(f"Got wallet info: {json.dumps(wallet_info, default=str)}")
+
+            # Use dictionary access instead of attribute access
+            public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
+            if not public_key:
+                raise ValueError("No public key found in wallet info")
+
+            # Add wallet address to params
+            params['wallet_address'] = public_key
+            params['original_amount'] = params.get('amount')
+
+            logging.info(f"Starting trade execution with params: {json.dumps(params, default=str)}")
+            
+            # Execute trade through realtime monitor
+            if self.realtime_monitor:
+                logging.info("Executing admin trade through realtime monitor")
+                result = await self.realtime_monitor.execute_solana_trade(params)
+                return result
+            else:
+                raise ValueError("No trade executor available")
+
+        except Exception as e:
+            error_msg = f"Trade execution error: {str(e)}"
+            logging.error(error_msg)
+            return {
+                'success': False,
+                'error': error_msg,
+                'user_message': f"Failed to execute trade: {str(e)}"
+            }
