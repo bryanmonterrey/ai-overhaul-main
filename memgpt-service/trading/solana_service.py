@@ -233,18 +233,13 @@ class SolanaService:
             
             # Extract session info for trade requests
             if action == 'trade':
-                # Get original wallet signature for session verification
-                wallet_info = params.get('wallet', {})
-                original_signature = (
-                    wallet_info.get('credentials', {}).get('signature') or
-                    wallet_info.get('signature')
-                )
-                
-                if original_signature:
-                    headers['X-Trading-Session'] = original_signature
-                    logging.info(f"Using original signature for trade: {original_signature}")
+                # Use session ID from params for trade requests
+                session_id = params.get('sessionId')
+                if session_id:
+                    headers['X-Trading-Session'] = session_id
+                    logging.info(f"Using session ID for trade: {session_id}")
                 else:
-                    logging.warning("No original signature found for trade request")
+                    logging.warning("No session ID found for trade request")
 
             logging.info(f"Making request to {self.agent_kit_url}")
             logging.info(f"Request payload: action={action}, params={params}")
