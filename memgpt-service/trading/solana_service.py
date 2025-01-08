@@ -138,18 +138,33 @@ class SolanaService:
             current_ms = int(current_time.timestamp() * 1000)  # For bigint columns
 
             supabase_session = {
-                'public_key': public_key,
                 'signature': signature,
                 'expires_at': current_ms + (24 * 60 * 60 * 1000),  # bigint
                 'timestamp': current_ms,                            # bigint
                 'created_at': current_time.isoformat(),            # timestamptz
                 'updated_at': current_time.isoformat()             # timestamptz
             }
-            
-            # Store in trading_sessions table - Fix await syntax
-            response = await self.supabase.table('trading_sessions').insert(supabase_session).execute()
-            data = response.data
-            
+
+            # Try to update existing session first, if not exists then insert
+            try:
+                response = await self.supabase.table('trading_sessions')\
+                    .update(supabase_session)\
+                    .eq('public_key', public_key)\
+                    .execute()
+                
+                if not response.data:
+                    # No existing session, do an insert
+                    supabase_session['public_key'] = public_key  # Add public_key for insert
+                    response = await self.supabase.table('trading_sessions')\
+                        .insert(supabase_session)\
+                        .execute()
+                
+                data = response.data
+
+            except Exception as e:
+                logging.error(f"Session upsert error: {str(e)}")
+                raise
+
             # Call initSession
             session_result = await self._call_agent_kit('initSession', init_params)
 
