@@ -102,10 +102,7 @@ class SolanaService:
     async def _verify_session(self, wallet_info: Dict[str, Any]) -> Dict[str, Any]:
         """Verify and initialize trading session"""
         try:
-            # Log incoming wallet info for debugging
-            logging.info(f"Verifying session with wallet info: {json.dumps(wallet_info, default=str)}")
-            
-            # Extract credentials in the format the API expects
+            # Extract credentials
             public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
             original_signature = (
                 wallet_info.get('credentials', {}).get('signature') or
@@ -119,14 +116,36 @@ class SolanaService:
                     'code': 'MISSING_CREDENTIALS'
                 }
 
-            # Format exactly as agent-kit/route.ts expects for verifySession
+            # First check if we have a valid session in Supabase
+            try:
+                session_data = self.supabase.table('trading_sessions')\
+                    .select('*')\
+                    .eq('public_key', public_key)\
+                    .single()\
+                    .execute()
+                    
+                if session_data.data:
+                    # Session exists, verify it's not expired
+                    expires_at = session_data.data.get('expires_at')
+                    if expires_at and expires_at > int(datetime.now().timestamp() * 1000):
+                        return {
+                            'success': True,
+                            'wallet_info': wallet_info,
+                            'sessionId': session_data.data.get('signature'),
+                            'expiresAt': expires_at,
+                            'signature': original_signature
+                        }
+            except Exception as e:
+                logging.warning(f"Error checking existing session: {str(e)}")
+
+            # No valid session found, initialize new one
             init_params = {
                 'wallet': {
                     'publicKey': public_key,
-                    'signature': original_signature,  # Use original signature
+                    'signature': original_signature,
                     'credentials': {
                         'publicKey': public_key,
-                        'signature': original_signature,  # Use original signature
+                        'signature': original_signature,
                         'signTransaction': True,
                         'signAllTransactions': True,
                         'connected': True
@@ -134,7 +153,7 @@ class SolanaService:
                 }
             }
 
-            # Call initSession
+            # Initialize new session with agent-kit
             session_result = await self._call_agent_kit('initSession', init_params)
 
             if not session_result.get('success'):
@@ -145,13 +164,31 @@ class SolanaService:
                     'code': session_result.get('code', 'SESSION_VERIFICATION_FAILED')
                 }
 
-            # Return success with both wallet info and session data
+            # Store session in Supabase
+            try:
+                session_data = {
+                    'public_key': public_key,
+                    'signature': original_signature,
+                    'session_id': session_result.get('sessionId'),
+                    'expires_at': session_result.get('expiresAt'),
+                    'created_at': datetime.now().isoformat(),
+                    'updated_at': datetime.now().isoformat()
+                }
+                
+                self.supabase.table('trading_sessions')\
+                    .upsert(session_data)\
+                    .execute()
+                    
+                logging.info(f"Stored session in Supabase: {session_data}")
+            except Exception as e:
+                logging.error(f"Failed to store session: {str(e)}")
+
             return {
                 'success': True,
                 'wallet_info': wallet_info,
                 'sessionId': session_result.get('sessionId'),
                 'expiresAt': session_result.get('expiresAt'),
-                'signature': original_signature  # Include original signature
+                'signature': original_signature
             }
 
         except Exception as e:

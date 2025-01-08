@@ -37,6 +37,7 @@ import {
 } from '../types/agent-kit';
 import bs58 from 'bs58';
 import { ExtendedSolanaAgentKit } from './extended-agent-kit';
+import { createClient } from '@supabase/supabase-js';
 
 // Interface Definitions
 interface TradingSession {
@@ -95,6 +96,7 @@ class TradeExecutionService {
   private listeners: { [key: string]: Function[] } = {};
   private activeSessions: Map<string, TradingSession> = new Map();
   private readonly SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+  private supabase;
 
   constructor() {
     this.connection = new Connection(process.env.NEXT_PUBLIC_RPC_URL!);
@@ -105,6 +107,11 @@ class TradeExecutionService {
       'readonly',
       process.env.NEXT_PUBLIC_RPC_URL!,
       process.env.OPENAI_API_KEY!
+    );
+    
+    this.supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
     
     this.initializeJupiter();
@@ -127,6 +134,37 @@ class TradeExecutionService {
     );
   }
 
+  private async getSession(publicKey: string): Promise<TradingSession | null> {
+    const { data, error } = await this.supabase
+      .from('trading_sessions')
+      .select('*')
+      .eq('public_key', publicKey)
+      .gt('expires_at', new Date().toISOString())
+      .single();
+
+    if (error || !data) return null;
+
+    return {
+      publicKey: data.public_key,
+      signature: data.signature,
+      timestamp: new Date(data.created_at).getTime(),
+      expiresAt: new Date(data.expires_at).getTime(),
+      wallet: data.wallet_data
+    };
+  }
+
+  private async saveSession(session: TradingSession): Promise<void> {
+    await this.supabase
+      .from('trading_sessions')
+      .upsert({
+        public_key: session.publicKey,
+        signature: session.signature,
+        created_at: new Date(session.timestamp).toISOString(),
+        expires_at: new Date(session.expiresAt).toISOString(),
+        wallet_data: session.wallet
+      })
+      .eq('public_key', session.publicKey);
+  }
 
   async initializeSession(wallet: WalletAdapter): Promise<string> {
     try {
@@ -203,13 +241,7 @@ class TradeExecutionService {
       }
     };
 
-    this.activeSessions.set(session.publicKey, session);
-    this.emit('session_status', {
-      status: 'active',
-      publicKey: session.publicKey,
-      expiresAt: session.expiresAt
-    });
-
+    await this.saveSession(session);
     return session;
   }
 
@@ -220,21 +252,11 @@ class TradeExecutionService {
     });
   }
 
-  async validateSession(publicKey: string): Promise<boolean> {
-    const session = this.activeSessions.get(publicKey);
+  async validateSession(publicKey: string, signature: string): Promise<boolean> {
+    const session = await this.getSession(publicKey);
     if (!session) return false;
-    
-    if (Date.now() > session.expiresAt) {
-      this.activeSessions.delete(publicKey);
-      this.emit('session_status', {
-        status: 'expired',
-        publicKey,
-        expiresAt: session.expiresAt
-      });
-      return false;
-    }
 
-    return true;
+    return session.signature === signature && session.expiresAt > Date.now();
   }
 
   async refreshSession(publicKey: string): Promise<TradingSession | null> {
@@ -437,18 +459,20 @@ class TradeExecutionService {
   }
 
   async executeTradeWithMEV(params: TradeParams, wallet: WalletAdapter): Promise<TradeExecutionResponse> {
+    const session = await this.getSession(wallet.publicKey.toString());
+    if (!session) {
+      throw new Error('No active trading session. Please initialize a session first.');
+    }
+
+    if (session.expiresAt < Date.now()) {
+      await this.supabase
+        .from('trading_sessions')
+        .update({ is_active: false })
+        .eq('public_key', wallet.publicKey.toString());
+      throw new Error('Trading session expired. Please initialize a new session.');
+    }
+
     try {
-      // Validate trading session
-      const session = this.activeSessions.get(wallet.publicKey.toString());
-      if (!session) {
-        throw new Error('No active trading session. Please initialize a session first.');
-      }
-
-      if (Date.now() > session.expiresAt) {
-        this.clearSession(wallet.publicKey.toString());
-        throw new Error('Trading session expired. Please create a new session.');
-      }
-
       const agentKit = await this.getOrCreateAgentKit(wallet, session);
       
       const inputTokenData = await agentKit.getTokenDataByAddress(params.inputMint);
