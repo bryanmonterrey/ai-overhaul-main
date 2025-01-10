@@ -60,114 +60,70 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
   }
 
   // Session management
-  async initSession(params: { 
-    wallet: { 
-      publicKey: string; 
-      signature?: string;
-      credentials?: {
-        publicKey: string;
-        signature: string;
-        signTransaction: boolean;
-        signAllTransactions: boolean;
-        connected: boolean;
-      }
-    } 
-  }): Promise<SessionResponse> {
+  async initSession(params: { wallet: { publicKey: string; signature?: string; credentials?: any } }): Promise<SessionResponse> {
     try {
-      const signature = params.wallet.signature || params.wallet.credentials?.signature;
-      const publicKey = params.wallet.publicKey || params.wallet.credentials?.publicKey;
-      
-      if (!signature || !publicKey) {
-        return {
-          success: false,
-          error: "Missing signature",
-          code: "MISSING_SIGNATURE"
-        };
-      }
+        const signature = params.wallet.signature || params.wallet.credentials?.signature;
+        const publicKey = params.wallet.publicKey || params.wallet.credentials?.publicKey;
+        
+        if (!signature || !publicKey) {
+            return {
+                success: false,
+                error: "Missing signature",
+                code: "MISSING_SIGNATURE"
+            };
+        }
 
-      // First try to update existing session
-      const { data: existingSession } = await this.supabase
-        .from('trading_sessions')
-        .select('*')
-        .eq('public_key', publicKey)
-        .eq('is_active', true)
-        .single();
-
-      if (existingSession) {
-        // Update existing session
-        const { data: updatedSession, error: updateError } = await this.supabase
-          .from('trading_sessions')
-          .update({
-            signature: signature,
-            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
-            updated_at: new Date(),
-            wallet_data: {
-              publicKey,
-              connected: true,
-              tradingPublicKey: this.tradingKeypair?.publicKey.toString()
-            }
-          })
-          .eq('public_key', publicKey)
-          .select()
-          .single();
+        // First deactivate any existing sessions
+        const { error: updateError } = await this.supabase
+            .from('trading_sessions')
+            .update({ is_active: false })
+            .eq('public_key', publicKey)
+            .eq('is_active', true);
 
         if (updateError) {
-          console.error('Session update error:', updateError);
-          return {
-            success: false,
-            error: updateError.message,
-            code: updateError.code
-          };
+            console.error('Error deactivating existing sessions:', updateError);
+        }
+
+        // Create new session
+        const sessionData = {
+            public_key: publicKey,
+            signature: signature,
+            expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            is_active: true,
+            wallet_data: {
+                publicKey,
+                connected: true,
+                tradingPublicKey: this.tradingKeypair?.publicKey.toString()
+            }
+        };
+
+        const { error: insertError } = await this.supabase
+            .from('trading_sessions')
+            .insert(sessionData);
+
+        if (insertError) {
+            console.error('Session creation error:', insertError);
+            return {
+                success: false,
+                error: insertError.message,
+                code: insertError.code
+            };
         }
 
         return {
-          success: true,
-          sessionId: signature,
-          sessionSignature: signature,
-          timestamp: new Date().toISOString()
+            success: true,
+            sessionId: signature,
+            sessionSignature: signature,
+            timestamp: new Date().toISOString()
         };
-      }
-
-      // If no existing session, create new one
-      const { data: newSession, error: insertError } = await this.supabase
-        .from('trading_sessions')
-        .insert({
-          public_key: publicKey,
-          signature: signature,
-          expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
-          is_active: true,
-          wallet_data: {
-            publicKey,
-            connected: true,
-            tradingPublicKey: this.tradingKeypair?.publicKey.toString()
-          }
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error('Session creation error:', insertError);
-        return {
-          success: false,
-          error: insertError.message,
-          code: insertError.code
-        };
-      }
-
-      return {
-        success: true,
-        sessionId: signature,
-        sessionSignature: signature,
-        timestamp: new Date().toISOString()
-      };
 
     } catch (error) {
-      console.error('Session initialization error:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
-        code: "SESSION_INIT_ERROR"
-      };
+        console.error('Session initialization error:', error);
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error",
+            code: "SESSION_INIT_ERROR"
+        };
     }
   }
 
@@ -180,7 +136,28 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
   }
 
   async validateSession(sessionId: string): Promise<boolean> {
-    return !this.isReadonly && !!this.tradingKeypair;
+    try {
+        // Get latest active session
+        const { data, error } = await this.supabase
+            .from('trading_sessions')
+            .select('*')
+            .eq('signature', sessionId)
+            .eq('is_active', true)
+            .gt('expires_at', new Date().toISOString())
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error) {
+            console.error('Session validation error:', error);
+            return false;
+        }
+
+        return !!data;
+    } catch (error) {
+        console.error('Session validation error:', error);
+        return false;
+    }
   }
 
   async createOrcaSingleSidedWhirlpool(

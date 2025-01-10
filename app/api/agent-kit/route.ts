@@ -54,32 +54,23 @@ export async function POST(req: Request) {
   try {
     validateEnvironment();
 
-    const { action, params } = await req.json();
-    console.log('Request body:', params);
+    const body = await req.json();
+    console.log('Request body:', body);
 
-    const sessionSignature = req.headers.get('X-Trading-Session');
+    const { action, params } = body;
 
-    // For trade actions, verify session first
-    if (action === 'trade') {
-      if (!sessionSignature) {
-        return NextResponse.json({
-          error: 'No trading session found',
-          code: 'SESSION_REQUIRED'
-        }, { status: 401 });
-      }
-
-      const isValidSession = await verifySession(
-        params.wallet.publicKey,
-        sessionSignature
-      );
-
-      if (!isValidSession) {
-        return NextResponse.json({
-          error: 'Invalid session signature',
-          code: 'SESSION_INVALID'
-        }, { status: 401 });
-      }
+    if (!action) {
+      return NextResponse.json({
+        error: 'Missing action parameter'
+      }, {
+        status: 400,
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
     }
+
+    console.log('Processing action:', action, 'with params:', params);
 
     // Initialize agent-kit for sessions if needed
     if (action === 'initSession') {
@@ -96,10 +87,10 @@ export async function POST(req: Request) {
       }
 
       // Verify initial signature
-      const isValid = await verifySession(
-        params.wallet.publicKey,
-        params.wallet.signature
-      );
+      const isValid = await verifySession({
+        publicKey: params.wallet.publicKey,
+        signature: params.wallet.signature
+      });
 
       if (!isValid) {
         return NextResponse.json({

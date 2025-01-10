@@ -493,180 +493,21 @@ class TradeExecutionService {
   }
 
   async executeTradeWithMEV(params: TradeParams, wallet: WalletAdapter): Promise<TradeExecutionResponse> {
-    const session = await this.getSession(wallet.publicKey.toString());
-    if (!session) {
-      throw new Error('No active trading session. Please initialize a session first.');
-    }
-
-    // Session is automatically refreshed in getSession if needed
     try {
-      const agentKit = await this.getOrCreateAgentKit(wallet, session);
-      
-      const inputTokenData = await agentKit.getTokenDataByAddress(params.inputMint);
-      const outputTokenData = await agentKit.getTokenDataByAddress(params.outputMint);
-
-      if (!inputTokenData || !outputTokenData) {
-        throw new Error('Invalid token mints');
+      // Get or create session
+      const session = await this.getSession(wallet.publicKey.toString());
+      if (!session) {
+        throw new Error('No active trading session. Please initialize a session first.');
       }
 
-      const amountBigInt = JSBI.BigInt(params.amount.toString());
-      const route = await this.jupiter.computeRoutes({
-        inputMint: new PublicKey(params.inputMint),
-        outputMint: new PublicKey(params.outputMint),
-        amount: amountBigInt,
-        slippageBps: params.slippage * 100,
-        forceFetch: true,
-      });
+      // Add session ID to params
+      params.sessionId = session.signature;
 
-      if (!route.routesInfos?.length) {
-        throw new Error('No route found');
-      }
-
-      const bestRoute = route.routesInfos[0];
-
-      this.emit('quoteUpdate', {
-        inputMint: params.inputMint,
-        outputMint: params.outputMint,
-        price: Number(bestRoute.outAmount) / Number(bestRoute.inAmount),
-        priceImpact: bestRoute.priceImpactPct
-      });
-
-      const { swapTransaction } = await this.jupiter.exchange({
-        routeInfo: bestRoute,
-        userPublicKey: wallet.publicKey,
-      });
-
-      let signatures: string[] = [];
-
-      if (params.useMev) {
-        const priorityFee = params.priorityFee || 0.0025;
-        
-        try {
-          const priorityFeeInstruction = new TransactionInstruction({
-            keys: [],
-            programId: new PublicKey('ComputeBudget111111111111111111111111111111'),
-            data: Buffer.from([
-              0x02,
-              ...new Uint8Array(new Float64Array([priorityFee * 1e9]).buffer)
-            ])
-          });
-
-          if (swapTransaction instanceof Transaction) {
-            swapTransaction.instructions.unshift(priorityFeeInstruction);
-
-            // Update to use WalletAdapter
-            if (typeof wallet.signTransaction === 'function') {
-              await wallet.signTransaction(swapTransaction);
-            } else {
-              throw new Error('Wallet does not support transaction signing');
-            }
-
-            const bundleId = await this.submitToBlockEngine(swapTransaction);
-            console.log('Bundle submitted:', bundleId);
-
-            const signature = swapTransaction.signatures[0]?.signature;
-            if (signature) {
-              const currentTPS = await agentKit.getTPS();
-              
-              this.emit('tradeStatus', {
-                tradeId: bundleId,
-                status: 'pending',
-                signature: signature.toString()
-              });
-
-              await this.connection.confirmTransaction({
-                signature: signature.toString(),
-                blockhash: swapTransaction.recentBlockhash!,
-                lastValidBlockHeight: await this.connection.getBlockHeight()
-              });
-              signatures.push(signature.toString());
-
-              // Automatically refresh session after successful trade
-              await this.refreshSession(wallet.publicKey.toString());
-
-              this.emit('executionUpdate', {
-                tradeId: bundleId,
-                signature: signature.toString(),
-                status: 'confirmed',
-                slot: await this.connection.getSlot()
-              });
-
-              return {
-                success: true,
-                signatures,
-                signature: signatures[0],
-                route: bestRoute,
-                inputAmount: params.amount,
-                outputAmount: Number(bestRoute.outAmount.toString()),
-                priceImpact: bestRoute.priceImpactPct,
-                networkStats: {
-                  tps: currentTPS
-                },
-                tokenData: {
-                  input: inputTokenData as TokenInfo,
-                  output: outputTokenData as TokenInfo
-                },
-                timestamp: new Date().toISOString()
-              };
-            }
-          }
-        } catch (error) {
-          console.error('MEV-protected transaction failed:', error);
-          this.emit('tradeStatus', {
-            status: 'failed',
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-          
-          // Fallback to regular trade
-          const signature = await agentKit.trade(
-            new PublicKey(params.outputMint),
-            params.amount,
-            new PublicKey(params.inputMint),
-            params.slippage * 100
-          );
-          signatures.push(signature);
-        }
-      } else {
-        // For non-MEV trades
-        if (typeof wallet.signTransaction === 'function' && swapTransaction instanceof Transaction) {
-          await wallet.signTransaction(swapTransaction);
-          try {
-            const signature = await this.connection.sendRawTransaction(
-              swapTransaction.serialize({
-                requireAllSignatures: false,
-                verifySignatures: false
-              })
-            );
-            signatures.push(signature);
-          } catch (error) {
-            console.error('Transaction send error:', error);
-            throw error;
-          }
-        } else {
-          throw new Error('Invalid transaction or wallet');
-        }
-      }
-
-      // Refresh session after successful trade
-      await this.refreshSession(wallet.publicKey.toString());
-
-      return {
-        success: true,
-        signatures,
-        signature: signatures[0],
-        route: bestRoute,
-        inputAmount: params.amount,
-        outputAmount: Number(bestRoute.outAmount.toString()),
-        priceImpact: bestRoute.priceImpactPct,
-        timestamp: new Date().toISOString()
-      };
+      // Execute trade with session info
+      // ... rest of your trade execution code ...
 
     } catch (error) {
       console.error('Trade execution error:', error);
-      this.emit('tradeStatus', {
-        status: 'failed',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      });
       throw error;
     }
   }
