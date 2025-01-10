@@ -77,7 +77,7 @@ class SolanaService:
                     'code': 'MISSING_CREDENTIALS',
                     'message': 'Public key is required for session initialization'
                 }
-                
+                    
             if not signature:
                 # Generate session message and ask frontend to sign
                 session_message = f"Trading session initialization for {public_key} at {datetime.now().isoformat()}"
@@ -87,7 +87,7 @@ class SolanaService:
                     'session_message': session_message,
                     'public_key': public_key
                 }
-                    
+                        
             # Build complete initialization parameters
             init_params = {
                 'wallet': {
@@ -103,27 +103,50 @@ class SolanaService:
                     }
                 }
             }
-            
+                
             logging.info(f"Initializing session with params: {init_params}")
             result = await self._call_agent_kit('initSession', init_params)
-            
+                
             if result.get('success'):
                 logging.info("Session initialization successful")
-                
-                # Update wallet credentials with session info
-                if session_id := result.get('sessionId'):
-                    init_params['wallet']['signature'] = session_id
-                    init_params['wallet']['credentials']['signature'] = session_id
-                    init_params['wallet']['credentials']['sessionSignature'] = session_id
-                    logging.info(f"Updated session ID: {session_id}")
                     
-                # Store session in database
-                await self._store_session(init_params['wallet'], result)
+                try:
+                    # Update wallet credentials with session info
+                    if session_id := result.get('sessionId'):
+                        init_params['wallet']['signature'] = session_id
+                        init_params['wallet']['credentials']['signature'] = session_id
+                        init_params['wallet']['credentials']['sessionSignature'] = session_id
+                        logging.info(f"Updated session ID: {session_id}")
+                        
+                    # Store session in Supabase
+                    current_time = datetime.now()
+                    expires_at = current_time + timedelta(days=1)
+                    
+                    session_data = {
+                        'public_key': public_key,
+                        'signature': result.get('sessionId'),
+                        'expires_at': expires_at.isoformat(),
+                        'is_active': True,
+                        'wallet_data': init_params['wallet']
+                    }
+                    
+                    success, store_result = await safe_supabase_execute(
+                        self.supabase.table('trading_sessions').upsert(session_data),
+                        error_message="Failed to store session"
+                    )
+
+                    if not success:
+                        logging.warning(f"Failed to store session (continuing): {store_result}")
+                        
+                except Exception as e:
+                    logging.error(f"Error updating or storing session info (continuing): {str(e)}")
+                    # Continue since we have a valid session, even if storage failed
+                    
+                return result
             else:
                 logging.error(f"Session initialization failed: {result.get('error')}")
-                
-            return result
-                
+                return result
+                    
         except Exception as e:
             logging.error(f"Session initialization error: {str(e)}")
             return {
@@ -465,3 +488,34 @@ class SolanaService:
             'outputMint': output_mint,
             'amount': amount
         })
+    
+    # In solana_service.py, add this method to the SolanaService class:
+    async def _store_session(self, wallet_info: Dict[str, Any], session_result: Dict[str, Any]) -> None:
+        """Store the session information in Supabase"""
+        try:
+            public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
+            session_id = session_result.get('sessionId')
+            
+            if not public_key or not session_id:
+                logging.error("Missing required session data for storage")
+                return
+                
+            session_data = {
+                'public_key': public_key,
+                'signature': session_id,
+                'expires_at': datetime.fromtimestamp(session_result['expiresAt'] / 1000).isoformat(),
+                'is_active': True,
+                'wallet_data': wallet_info
+            }
+            
+            success, store_result = await safe_supabase_execute(
+                self.supabase.table('trading_sessions').upsert(session_data),
+                error_message="Failed to store session"
+            )
+
+            if not success:
+                logging.warning(f"Failed to store session (continuing): {store_result}")
+                
+        except Exception as e:
+            logging.error(f"Error storing session: {str(e)}")
+            # Don't raise the error to allow trading to continue

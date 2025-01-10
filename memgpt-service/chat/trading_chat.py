@@ -426,34 +426,38 @@ class TradingChat:
 
             logging.info(f"Got wallet info: {json.dumps(wallet_info, default=str)}")
 
-            # Extract and verify credentials
-            public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
-            signature = (
-                wallet_info.get('signature') or
-                wallet_info.get('credentials', {}).get('signature') or
-                wallet_info.get('credentials', {}).get('sessionProof')
-            )
+            # Initialize trading session first
+            session_result = await self.solana_service.init_trading_session(wallet_info)
+            if not session_result.get('success'):
+                return {
+                    'success': False,
+                    'error': session_result.get('error', 'Failed to initialize trading session'),
+                    'code': session_result.get('code', 'SESSION_INIT_ERROR')
+                }
+                
+            # Add session ID to wallet credentials
+            session_id = session_result.get('sessionId')
+            if session_id:
+                if not wallet_info.get('credentials'):
+                    wallet_info['credentials'] = {}
+                wallet_info['credentials']['sessionSignature'] = session_id
+                wallet_info['credentials']['signature'] = session_id
 
-            if not public_key:
-                raise ValueError("No public key found in wallet info")
-            if not signature:
-                raise ValueError("No signature found in wallet credentials")
-
-            # Format complete parameters
+            # Format trading parameters with session info
             trade_params = {
                 **params,
-                'wallet_address': public_key,
+                'wallet_address': wallet_info.get('publicKey'),
                 'original_amount': params.get('amount'),
                 'wallet': {
-                    'publicKey': public_key,
-                    'signature': signature,
+                    'publicKey': wallet_info.get('publicKey'),
+                    'signature': session_id,
                     'credentials': {
-                        'publicKey': public_key,
-                        'signature': signature,
-                        'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
-                        'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
-                        'connected': wallet_info.get('credentials', {}).get('connected', True),
-                        'sessionSignature': signature
+                        'publicKey': wallet_info.get('publicKey'),
+                        'signature': session_id,
+                        'sessionSignature': session_id,
+                        'signTransaction': True,
+                        'signAllTransactions': True,
+                        'connected': True
                     }
                 }
             }
