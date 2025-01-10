@@ -10,7 +10,8 @@ services:
       pip install -r database-requirements.txt && \
       pip install -r base-requirements.txt && \
       pip install -r ai-requirements.txt && \
-      pip install -r blockchain-requirements.txt
+      pip install -r blockchain-requirements.txt && \
+      pip install -r requirements.txt
     startCommand: gunicorn letta_service:app -w 2 -k uvicorn.workers.UvicornWorker --max-requests 1000 --max-requests-jitter 50 --timeout 120 --graceful-timeout 60 --keep-alive 5 -b 0.0.0.0:${PORT:-3001}
     envVars:
       - key: PYTHON_VERSION

@@ -116,29 +116,31 @@ class SolanaService:
                     'code': 'MISSING_CREDENTIALS'
                 }
 
-            # First check if we have a valid session in Supabase
+            # Check existing session
+            current_time = datetime.now().isoformat()
             try:
-                session_data = self.supabase.table('trading_sessions')\
+                result = await self.supabase.table('trading_sessions')\
                     .select('*')\
                     .eq('public_key', public_key)\
-                    .single()\
+                    .eq('is_active', True)\
+                    .gt('expires_at', current_time)\
                     .execute()
                     
-                if session_data.data:
-                    # Session exists, verify it's not expired
-                    expires_at = session_data.data.get('expires_at')
-                    if expires_at and expires_at > int(datetime.now().timestamp() * 1000):
-                        return {
-                            'success': True,
-                            'wallet_info': wallet_info,
-                            'sessionId': session_data.data.get('signature'),
-                            'expiresAt': expires_at,
-                            'signature': original_signature
-                        }
+                # Convert Supabase response to dict if needed
+                session_data = result.data[0] if result.data and len(result.data) > 0 else None
+                
+                if session_data:
+                    return {
+                        'success': True,
+                        'wallet_info': wallet_info,
+                        'sessionId': session_data.get('signature'),
+                        'expiresAt': session_data.get('expires_at'),
+                        'signature': original_signature
+                    }
             except Exception as e:
-                logging.warning(f"Error checking existing session: {str(e)}")
+                logging.warning(f"Error checking existing session: {e}")
 
-            # No valid session found, initialize new one
+            # Initialize new session with agent-kit
             init_params = {
                 'wallet': {
                     'publicKey': public_key,
@@ -153,7 +155,6 @@ class SolanaService:
                 }
             }
 
-            # Initialize new session with agent-kit
             session_result = await self._call_agent_kit('initSession', init_params)
 
             if not session_result.get('success'):
@@ -166,22 +167,33 @@ class SolanaService:
 
             # Store session in Supabase
             try:
+                expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
                 session_data = {
                     'public_key': public_key,
                     'signature': original_signature,
-                    'session_id': session_result.get('sessionId'),
-                    'expires_at': session_result.get('expiresAt'),
-                    'created_at': datetime.now().isoformat(),
-                    'updated_at': datetime.now().isoformat()
+                    'expires_at': expires_at,
+                    'is_active': True,
+                    'wallet_data': {
+                        'publicKey': public_key,
+                        'connected': True,
+                        'signature': original_signature,
+                        'timestamp': int(datetime.now().timestamp() * 1000)
+                    }
                 }
                 
-                self.supabase.table('trading_sessions')\
+                result = await self.supabase.table('trading_sessions')\
                     .upsert(session_data)\
                     .execute()
-                    
-                logging.info(f"Stored session in Supabase: {session_data}")
+                
+                if hasattr(result, 'error') and result.error:
+                    logging.error(f"Failed to store session: {result.error}")
+                    # Continue anyway since we have a valid session from agent-kit
+                else:
+                    logging.info(f"Stored session in Supabase: {session_data}")
+
             except Exception as e:
-                logging.error(f"Failed to store session: {str(e)}")
+                logging.error(f"Failed to store session: {e}")
+                # Continue since we have a valid session from agent-kit
 
             return {
                 'success': True,
@@ -192,7 +204,7 @@ class SolanaService:
             }
 
         except Exception as e:
-            logging.error(f"Session verification error: {str(e)}")
+            logging.error(f"Session verification error: {e}")
             return {
                 'success': False,
                 'error': str(e),
@@ -389,8 +401,9 @@ class SolanaService:
                 'tokenOut': token_address,
                 'slippageBps': params.get('slippage', 100),
                 'token_data': token_info,
-                'wallet': trade_wallet_info,  # Use wallet info with original signature
-                'sessionId': session_id  # Session ID only at root level
+                'wallet': trade_wallet_info,
+                'sessionId': session_id,
+                'mode': 'trade'  # Add mode parameter
             }
 
             logging.info(f"Executing trade with params: {swap_params}")
