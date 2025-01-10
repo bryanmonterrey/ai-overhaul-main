@@ -282,14 +282,26 @@ class RealTimeMonitor:
 
             trade_id = str(uuid.uuid4())
             
-            # Add wallet info to trade params - use dictionary access
+            # Keep the session ID consistent
+            session_id = (
+                wallet_info.get('signature') or  # Try signature first (should be session ID)
+                wallet_info.get('credentials', {}).get('sessionSignature') or  # Then sessionSignature
+                wallet_info.get('credentials', {}).get('signature')  # Finally credentials signature
+            )
+
+            # Add wallet info to trade params with consistent session ID
             trade_params = {
                 **params,  # Keep existing params
                 'wallet': {
-                    'publicKey': wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey'),
-                    'signature': wallet_info.get('signature'),  # Keep the signature structure
-                    'credentials': {  # Keep the full credentials structure
-                        **wallet_info.get('credentials', {}),  # Copy all existing credentials
+                    'publicKey': wallet_info.get('publicKey'),
+                    'signature': session_id,
+                    'credentials': {
+                        'publicKey': wallet_info.get('publicKey'),
+                        'signature': session_id,
+                        'sessionSignature': session_id,
+                        'signTransaction': True,
+                        'signAllTransactions': True,
+                        'connected': True
                     }
                 }
             }

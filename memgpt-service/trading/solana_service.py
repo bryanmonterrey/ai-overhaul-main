@@ -323,7 +323,11 @@ class SolanaService:
             if (action == 'trade' and
                 'X-Trading-Session' not in headers and
                 'X-Force-Session' not in headers):
-                wallet_info = params.get('wallet', {})
+                
+                # Create deep copy of params to avoid modifying original
+                trade_params = {**params}
+                wallet_info = {**params.get('wallet', {})}
+                
                 session_signature = (
                     wallet_info.get('sessionId') or  # Try sessionId first
                     wallet_info.get('credentials', {}).get('sessionSignature') or  # Then sessionSignature
@@ -332,6 +336,20 @@ class SolanaService:
                 
                 if session_signature:
                     headers['X-Trading-Session'] = session_signature
+                    # Update wallet info with consistent session ID
+                    wallet_info['sessionId'] = session_signature
+                    wallet_info['signature'] = session_signature
+                    if 'credentials' in wallet_info:
+                        wallet_info['credentials'] = {
+                            **wallet_info.get('credentials', {}),
+                            'signature': session_signature,
+                            'sessionSignature': session_signature
+                        }
+                    
+                    trade_params['wallet'] = wallet_info
+                    trade_params['sessionId'] = session_signature
+                    params = trade_params
+                    
                     logging.info(f"Using session signature for trade: {session_signature}")
                 else:
                     logging.warning("No session signature found for trade request")
@@ -369,28 +387,7 @@ class SolanaService:
     async def execute_swap(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a swap transaction"""
         try:
-            # Verify token first
-            token_info = await self._verify_token(params['asset'])
-            if not token_info.get('address'):
-                return {
-                    'success': False,
-                    'error': 'Invalid token',
-                    'user_message': 'Token not found'
-                }
-
-            # Build basic trade params
-            trade_params = {
-                'outputMint': token_info['address'],
-                'inputAmount': float(params['amount']),
-                'inputMint': self.token_addresses['SOL'],
-                'tokenIn': self.token_addresses['SOL'],
-                'tokenOut': token_info['address'],
-                'slippageBps': 100,  # Default slippage
-                'token_data': token_info,
-                'wallet': params['wallet']  # Use wallet as is for now
-            }
-
-            # Session verification AFTER preparing basic params
+            # Session verification BEFORE anything else
             session_result = await self._verify_session(params['wallet'])
             if not session_result.get('success'):
                 # Session invalid or expired, try to initialize a new one
@@ -400,10 +397,32 @@ class SolanaService:
 
             # Get the current valid session ID
             session_id = session_result['sessionId']
+            logging.info(f"Using verified session ID for swap: {session_id}")
 
-            # Update wallet info with current session
+            # Verify token
+            token_info = await self._verify_token(params['asset'])
+            if not token_info.get('address'):
+                return {
+                    'success': False,
+                    'error': 'Invalid token',
+                    'user_message': 'Token not found'
+                }
+
+            # Build trade params with verified session
+            trade_params = {
+                'outputMint': token_info['address'],
+                'inputAmount': float(params['amount']),
+                'inputMint': self.token_addresses['SOL'],
+                'tokenIn': self.token_addresses['SOL'],
+                'tokenOut': token_info['address'],
+                'slippageBps': 100,
+                'token_data': token_info
+            }
+
+            # Set up wallet with correct session
             trade_params['wallet'] = {
                 'publicKey': params['wallet']['publicKey'],
+                'signature': session_id,
                 'credentials': {
                     'publicKey': params['wallet']['publicKey'],
                     'signature': session_id,
@@ -413,18 +432,15 @@ class SolanaService:
                     'connected': True
                 }
             }
-            # IMPORTANT: Add sessionId to wallet object as well as a top-level key
-            trade_params['wallet']['sessionId'] = session_id
             trade_params['sessionId'] = session_id
 
-            # Call agent-kit with current session ID and force use of session ID
+            # Call agent-kit with session header
             headers = {
                 'Content-Type': 'application/json',
-                'X-Trading-Session': session_id,
-                'X-Force-Session': 'true'  # Add this to prevent override
+                'X-Trading-Session': session_id
             }
 
-            logging.info(f"Executing trade with session ID: {session_id}")
+            logging.info(f"Calling agent-kit with session ID: {session_id}")
             result = await self._call_agent_kit('trade', trade_params, headers)
             return result
 
