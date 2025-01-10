@@ -69,6 +69,7 @@ export async function POST(req: Request) {
       const { data: session, error: sessionError } = await serverSupabase
         .from('trading_sessions')
         .select()
+        .or(`id.eq.${sessionId},signature.eq.${sessionId}`)
         .eq('public_key', publicKey)
         .eq('id', sessionId)  // Use id instead of signature
         .eq('is_active', true)
@@ -129,7 +130,7 @@ export async function POST(req: Request) {
         }
         const { data, error } = await serverSupabase
           .from('trading_sessions')
-          .select()
+          .select()  
           .eq('public_key', params.publicKey)
           .eq('signature', params.sessionSignature)
           .eq('is_active', true)
