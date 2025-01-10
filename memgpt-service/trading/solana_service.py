@@ -319,13 +319,15 @@ class SolanaService:
                 'Content-Type': 'application/json'
             }
             
-            # Don't overwrite session ID if it's already in headers
-            if action == 'trade' and 'X-Trading-Session' not in headers:
+            # Only try to extract session if not forced and no session header
+            if (action == 'trade' and
+                'X-Trading-Session' not in headers and
+                'X-Force-Session' not in headers):
                 wallet_info = params.get('wallet', {})
                 session_signature = (
-                    wallet_info.get('credentials', {}).get('sessionSignature') or  # Try sessionSignature first
-                    wallet_info.get('credentials', {}).get('signature') or  # Then regular signature
-                    wallet_info.get('signature')  # Finally direct signature
+                    wallet_info.get('sessionId') or  # Try sessionId first
+                    wallet_info.get('credentials', {}).get('sessionSignature') or  # Then sessionSignature
+                    wallet_info.get('credentials', {}).get('signature')  # Finally signature
                 )
                 
                 if session_signature:
@@ -399,7 +401,7 @@ class SolanaService:
             # Get the current valid session ID
             session_id = session_result['sessionId']
 
-            # Update trade params with current session
+            # Update wallet info with current session
             trade_params['wallet'] = {
                 'publicKey': params['wallet']['publicKey'],
                 'credentials': {
@@ -411,12 +413,15 @@ class SolanaService:
                     'connected': True
                 }
             }
+            # IMPORTANT: Add sessionId to wallet object as well as a top-level key
+            trade_params['wallet']['sessionId'] = session_id
             trade_params['sessionId'] = session_id
 
-            # Call agent-kit with current session ID
+            # Call agent-kit with current session ID and force use of session ID
             headers = {
                 'Content-Type': 'application/json',
-                'X-Trading-Session': session_id
+                'X-Trading-Session': session_id,
+                'X-Force-Session': 'true'  # Add this to prevent override
             }
 
             logging.info(f"Executing trade with session ID: {session_id}")
