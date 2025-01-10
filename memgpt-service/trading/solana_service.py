@@ -319,20 +319,20 @@ class SolanaService:
                 'Content-Type': 'application/json'
             }
             
-            # Extract session info for trade requests
-            if action == 'trade':
-                # Get original signature from wallet info
+            # Don't overwrite session ID if it's already in headers
+            if action == 'trade' and 'X-Trading-Session' not in headers:
                 wallet_info = params.get('wallet', {})
-                original_signature = (
-                    wallet_info.get('credentials', {}).get('signature') or
-                    wallet_info.get('signature')
+                session_signature = (
+                    wallet_info.get('credentials', {}).get('sessionSignature') or  # Try sessionSignature first
+                    wallet_info.get('credentials', {}).get('signature') or  # Then regular signature
+                    wallet_info.get('signature')  # Finally direct signature
                 )
                 
-                if original_signature:
-                    headers['X-Trading-Session'] = original_signature  # Use original signature
-                    logging.info(f"Using original signature for trade: {original_signature}")
+                if session_signature:
+                    headers['X-Trading-Session'] = session_signature
+                    logging.info(f"Using session signature for trade: {session_signature}")
                 else:
-                    logging.warning("No original signature found for trade request")
+                    logging.warning("No session signature found for trade request")
 
             logging.info(f"Making request to {self.agent_kit_url}")
             logging.info(f"Request payload: action={action}, params={params}")
