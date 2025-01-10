@@ -15,13 +15,12 @@ export default function handler(req: NextApiRequest, res: NextApiResponseServerI
       });
     });
 
-    const sessions = new Map<string, string>();
+    
 
     // Handle WebSocket connections
     wss.on('connection', (ws, request) => {
       // Extract client ID from URL
       const clientId = request.url?.split('/').pop() || 'unknown';
-      const sessionId = generateSessionId();
 
       // Send initial connection message
       ws.send(JSON.stringify({ 
