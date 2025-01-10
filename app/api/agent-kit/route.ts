@@ -70,7 +70,7 @@ export async function POST(req: Request) {
         .from('trading_sessions')
         .select()
         .eq('public_key', publicKey)
-        .eq('signature', sessionId)
+        .eq('id', sessionId)  // Use id instead of signature
         .eq('is_active', true)
         .gt('expires_at', new Date().toISOString())
         .single();
