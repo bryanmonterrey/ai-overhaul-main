@@ -51,31 +51,55 @@ class SolanaService:
     async def init_trading_session(self, wallet_info: Dict[str, Any]) -> Dict[str, Any]:
         """Initialize a trading session with agent-kit"""
         try:
-            # Try all possible signature locations
+            logging.info(f"Initializing trading session for wallet: {wallet_info}")
+            
+            # Extract credentials from all possible locations with detailed logging
+            public_key = (
+                wallet_info.get('publicKey') or 
+                wallet_info.get('credentials', {}).get('publicKey')
+            )
+            
+            # Try all possible signature locations with fallbacks
             signature = (
                 wallet_info.get('signature') or
                 wallet_info.get('credentials', {}).get('signature') or
-                wallet_info.get('credentials', {}).get('sessionProof')
+                wallet_info.get('credentials', {}).get('sessionProof') or
+                wallet_info.get('sessionSignature') or
+                wallet_info.get('credentials', {}).get('sessionSignature')
             )
             
+            logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(signature)}")
+            
+            if not public_key:
+                return {
+                    'success': False,
+                    'error': 'missing_public_key',
+                    'code': 'MISSING_CREDENTIALS',
+                    'message': 'Public key is required for session initialization'
+                }
+                
             if not signature:
                 # Generate session message and ask frontend to sign
+                session_message = f"Trading session initialization for {public_key} at {datetime.now().isoformat()}"
                 return {
                     'success': False,
                     'error': 'session_signature_required',
-                    'session_message': f"Trading session initialization for {wallet_info['publicKey']}"
+                    'session_message': session_message,
+                    'public_key': public_key
                 }
-                
+                    
+            # Build complete initialization parameters
             init_params = {
                 'wallet': {
-                    'publicKey': wallet_info['publicKey'],
+                    'publicKey': public_key,
                     'signature': signature,
                     'credentials': {
-                        'publicKey': wallet_info['publicKey'],
+                        'publicKey': public_key,
                         'signature': signature,
                         'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
                         'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
-                        'connected': wallet_info.get('credentials', {}).get('connected', True)
+                        'connected': wallet_info.get('credentials', {}).get('connected', True),
+                        'sessionSignature': signature
                     }
                 }
             }
@@ -86,19 +110,27 @@ class SolanaService:
             if result.get('success'):
                 logging.info("Session initialization successful")
                 
-                # Update wallet credentials with session info if provided
+                # Update wallet credentials with session info
                 if session_id := result.get('sessionId'):
                     init_params['wallet']['signature'] = session_id
                     init_params['wallet']['credentials']['signature'] = session_id
+                    init_params['wallet']['credentials']['sessionSignature'] = session_id
                     logging.info(f"Updated session ID: {session_id}")
+                    
+                # Store session in database
+                await self._store_session(init_params['wallet'], result)
             else:
                 logging.error(f"Session initialization failed: {result.get('error')}")
                 
             return result
-            
+                
         except Exception as e:
             logging.error(f"Session initialization error: {str(e)}")
-            raise
+            return {
+                'success': False,
+                'error': str(e),
+                'code': 'SESSION_INIT_ERROR'
+            }
 
     async def _verify_session(self, wallet_info: Dict[str, Any]) -> Dict[str, Any]:
         """Verify and initialize trading session"""

@@ -426,21 +426,44 @@ class TradingChat:
 
             logging.info(f"Got wallet info: {json.dumps(wallet_info, default=str)}")
 
-            # Use dictionary access instead of attribute access
+            # Extract and verify credentials
             public_key = wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey')
+            signature = (
+                wallet_info.get('signature') or
+                wallet_info.get('credentials', {}).get('signature') or
+                wallet_info.get('credentials', {}).get('sessionProof')
+            )
+
             if not public_key:
                 raise ValueError("No public key found in wallet info")
+            if not signature:
+                raise ValueError("No signature found in wallet credentials")
 
-            # Add wallet address to params
-            params['wallet_address'] = public_key
-            params['original_amount'] = params.get('amount')
+            # Format complete parameters
+            trade_params = {
+                **params,
+                'wallet_address': public_key,
+                'original_amount': params.get('amount'),
+                'wallet': {
+                    'publicKey': public_key,
+                    'signature': signature,
+                    'credentials': {
+                        'publicKey': public_key,
+                        'signature': signature,
+                        'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
+                        'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
+                        'connected': wallet_info.get('credentials', {}).get('connected', True),
+                        'sessionSignature': signature
+                    }
+                }
+            }
 
-            logging.info(f"Starting trade execution with params: {json.dumps(params, default=str)}")
+            logging.info(f"Starting trade execution with params: {json.dumps(trade_params, default=str)}")
             
             # Execute trade through realtime monitor
             if self.realtime_monitor:
                 logging.info("Executing admin trade through realtime monitor")
-                result = await self.realtime_monitor.execute_solana_trade(params)
+                result = await self.realtime_monitor.execute_solana_trade(trade_params)
                 return result
             else:
                 raise ValueError("No trade executor available")

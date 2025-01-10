@@ -5,7 +5,7 @@ import Decimal from 'decimal.js';
 import type { JupiterTokenData } from 'solana-agent-kit'; 
 import { 
   ISolanaAgentKit, 
-  SessionResponse, 
+  SessionResponse,
   TokenInfo,
   TokenDeploymentResponse,
   NFTMintResponse 
@@ -62,14 +62,19 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
   // Session management
   async initSession(params: { wallet: { publicKey: string; signature?: string; credentials?: any } }): Promise<SessionResponse> {
     try {
-        const signature = params.wallet.signature || params.wallet.credentials?.signature;
+        const signature = params.wallet.signature || 
+                         params.wallet.credentials?.signature || 
+                         params.wallet.credentials?.sessionProof ||
+                         params.wallet.credentials?.sessionSignature;
         const publicKey = params.wallet.publicKey || params.wallet.credentials?.publicKey;
         
         if (!signature || !publicKey) {
+            console.warn('Missing credentials:', { publicKey: !!publicKey, signature: !!signature });
             return {
                 success: false,
-                error: "Missing signature",
-                code: "MISSING_SIGNATURE"
+                error: "Missing signature or public key",
+                code: "MISSING_SIGNATURE",
+                message: "Both signature and public key are required for session initialization"
             };
         }
 
@@ -84,7 +89,7 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
             console.error('Error deactivating existing sessions:', updateError);
         }
 
-        // Create new session
+        // Create new session with enhanced wallet data
         const sessionData = {
             public_key: publicKey,
             signature: signature,
@@ -93,7 +98,16 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
             wallet_data: {
                 publicKey,
                 connected: true,
-                tradingPublicKey: this.tradingKeypair?.publicKey.toString()
+                tradingPublicKey: this.tradingKeypair?.publicKey.toString(),
+                signature: signature,
+                credentials: {
+                    publicKey,
+                    signature: signature,
+                    sessionSignature: signature,
+                    signTransaction: true,
+                    signAllTransactions: true,
+                    connected: true
+                }
             }
         };
 
@@ -114,7 +128,9 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
             success: true,
             sessionId: signature,
             sessionSignature: signature,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            publicKey: publicKey,
+            expiresAt: sessionData.expires_at
         };
 
     } catch (error) {
@@ -125,7 +141,7 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit implements ISolanaAge
             code: "SESSION_INIT_ERROR"
         };
     }
-  }
+}
 
   // The rest of your methods stay the same but use this.tradingKeypair for transactions
   async trade(outputMint: PublicKey, amount: number, inputMint: PublicKey, slippageBps: number): Promise<string> {
