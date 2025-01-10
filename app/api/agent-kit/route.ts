@@ -46,11 +46,6 @@ function createAgentKit(): ExtendedSolanaAgentKit {
 }
 
 export async function POST(req: Request) {
-  console.log('Agent-kit API called with request:', {
-    method: req.method,
-    headers: Object.fromEntries(req.headers),
-  });
-
   try {
     validateEnvironment();
 
@@ -59,159 +54,72 @@ export async function POST(req: Request) {
 
     const { action, params } = body;
 
-    if (!action) {
-      return NextResponse.json({
-        error: 'Missing action parameter'
-      }, {
-        status: 400,
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
+    if (action === 'trade') {
+      const sessionId = req.headers.get('X-Trading-Session');
+      const publicKey = params.wallet?.publicKey;
+
+      if (!sessionId || !publicKey) {
+        return NextResponse.json({
+          error: 'Session ID and public key required',
+          code: 'SESSION_REQUIRED'
+        }, { status: 401 });
+      }
+
+      // Get session from database
+      const { data: session } = await serverSupabase
+        .from('trading_sessions')
+        .select()
+        .eq('public_key', publicKey)
+        .eq('signature', sessionId)
+        .eq('is_active', true)
+        .gt('expires_at', new Date().toISOString())
+        .single();
+
+      if (!session) {
+        return NextResponse.json({
+          error: 'No active trading session. Please initialize a session first.',
+          code: 'SESSION_INVALID'
+        }, { status: 401 });
+      }
+
+      // Add session info to params
+      params.sessionInfo = session;
+
+      // Execute trade with session info
+      const tradeResult = await tradeExecution.executeTradeWithMEV(params, params.wallet);
+      return NextResponse.json(tradeResult);
     }
 
-    console.log('Processing action:', action, 'with params:', params);
-
-    // Initialize agent-kit for sessions if needed
     if (action === 'initSession') {
       if (!params?.wallet?.publicKey || !params?.wallet?.signature) {
         return NextResponse.json({
           error: 'Wallet and signature required for session initialization',
           code: 'INVALID_SESSION_PARAMS'
-        }, {
-          status: 400,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
+        }, { status: 400 });
       }
 
       // Verify initial signature
-      const isValid = await verifySession({
+      const sessionResult = await verifySession({
         publicKey: params.wallet.publicKey,
         signature: params.wallet.signature
       });
 
-      if (!isValid) {
+      if (!sessionResult.success) {
         return NextResponse.json({
-          error: 'Invalid wallet signature',
-          code: 'INVALID_SIGNATURE'
+          error: sessionResult.error || 'Session verification failed',
+          code: 'SESSION_VERIFICATION_FAILED'
         }, { status: 401 });
       }
 
-      try {
-        const kit = createAgentKit();
-        const sessionId = params.wallet.publicKey;
-        const sessionExpiry = Date.now() + (24 * 60 * 60 * 1000);
-
-        activeKits.set(sessionId, {
-          kit,
-          expiresAt: sessionExpiry,
-          signature: params.wallet.signature
-        });
-
-        return NextResponse.json({
-          success: true,
-          sessionId,
-          expiresAt: sessionExpiry
-        }, {
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      } catch (error: any) {
-        console.error('Failed to initialize agent-kit:', error);
-        return NextResponse.json({
-          error: 'Failed to initialize agent-kit',
-          details: error.message,
-          code: 'INIT_FAILED'
-        }, { 
-          status: 500,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      }
+      return NextResponse.json({
+        success: true,
+        sessionId: sessionResult.sessionId,
+        expiresAt: sessionResult.expiresAt
+      });
     }
 
-    if (['trade', 'validateTransaction'].includes(action)) {
-      const sessionSignature = req.headers.get('X-Trading-Session');
-
-      if (!sessionSignature) {
-        return NextResponse.json({
-          error: 'No trading session found',
-          code: 'SESSION_REQUIRED'
-        }, {
-          status: 401,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      }
-
-      if (!params?.wallet?.publicKey) {
-        return NextResponse.json({
-          error: 'Wallet public key required',
-          code: 'INVALID_WALLET'
-        }, {
-          status: 400,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      }
-
-      // Get the agent-kit instance for this session
-      const kitSession = activeKits.get(params.wallet.publicKey);
-      if (!kitSession || Date.now() > kitSession.expiresAt) {
-        activeKits.delete(params.wallet.publicKey);
-        return NextResponse.json({
-          error: 'Session expired',
-          code: 'SESSION_EXPIRED'
-        }, {
-          status: 401,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      }
-
-      // Verify against stored signature
-      if (sessionSignature !== kitSession.signature) {
-        return NextResponse.json({
-          error: 'Invalid session signature',
-          code: 'SESSION_INVALID'
-        }, {
-          status: 401,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-      }
-
-      // Add kit to params for trade execution
-      params.kit = kitSession.kit;
-    }
-
+    // Handle other actions...
     switch (action) {
-      case 'trade':
-        if (!params?.wallet) {
-          return NextResponse.json({
-            error: 'Wallet required for trade'
-          }, {
-            status: 400,
-            headers: {
-              'Content-Type': 'application/json'
-            }
-          });
-        }
-        const tradeResult = await tradeExecution.executeTradeWithMEV(params, params.wallet);
-        return NextResponse.json(tradeResult, {
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
-
       case 'getTokenData':
         try {
           const kit = createAgentKit();
@@ -246,61 +154,20 @@ export async function POST(req: Request) {
           }, { status: 500 });
         }
 
-      case 'validateSession':
-        if (!params?.sessionSignature || !params?.publicKey) {
-          return NextResponse.json({
-            error: 'Session signature and public key required'
-          }, { status: 400 });
-        }
-        const { data, error } = await serverSupabase
-            .from('sessions')
-            .select()
-            .eq('wallet_address', params.publicKey)
-            .eq('is_active', true)
-            .gt('expires_at', new Date().toISOString())
-            .limit(1)
-            .maybeSingle();
-        
-        const valid = !!data && !error;
-        
-        return NextResponse.json({
-            valid,
-            timestamp: new Date().toISOString()
-        });
-
       default:
         return NextResponse.json({
           error: 'Invalid action',
           action: action,
-          supported: ['initSession', 'trade', 'getTokenData', 'getPrice', 'getRoutes', 'validateTransaction', 'validateSession']
-        }, {
-          status: 400,
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        });
+          supported: ['initSession', 'trade', 'getTokenData', 'getPrice']
+        }, { status: 400 });
     }
-  } catch (error: any) {
-    console.error('Agent-kit API detailed error:', {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-      cause: error.cause
-    });
 
+  } catch (error: any) {
+    console.error('Agent-kit API error:', error);
     return NextResponse.json({
       error: error.message,
       type: error.name,
-      code: error.code || 'UNKNOWN_ERROR',
-      details: process.env.NODE_ENV === 'development' ? {
-        stack: error.stack,
-        cause: error.cause
-      } : undefined
-    }, {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    });
+      code: error.code || 'UNKNOWN_ERROR'
+    }, { status: 500 });
   }
 }

@@ -277,10 +277,10 @@ class SolanaService:
             logging.error(f"Token verification error: {str(e)}")
             raise
 
-    async def _call_agent_kit(self, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _call_agent_kit(self, action: str, params: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
         """Make a request to the agent-kit API"""
         try:
-            headers = {
+            headers = headers or {
                 'Content-Type': 'application/json'
             }
             
@@ -336,14 +336,8 @@ class SolanaService:
             wallet_info = params.get('wallet')
             if not wallet_info:
                 raise ValueError("No wallet info provided")
-
-            # Store original wallet signature before verification
-            original_signature = (
-                wallet_info.get('credentials', {}).get('signature') or
-                wallet_info.get('signature')
-            )
-
-            # Get public key from wallet info using dictionary access
+            
+            # Get public key
             public_key = (
                 wallet_info.get('publicKey') or 
                 wallet_info.get('credentials', {}).get('publicKey')
@@ -356,7 +350,7 @@ class SolanaService:
             if not session_result.get('success'):
                 return session_result
 
-            # Store session ID for subsequent requests
+            # Get session ID from session result
             session_id = session_result.get('sessionId')
             if not session_id:
                 return {
@@ -365,31 +359,14 @@ class SolanaService:
                     'code': 'SESSION_ID_MISSING'
                 }
 
-            # Create a new wallet info object with original signature preserved
-            trade_wallet_info = {
-                'publicKey': public_key,
-                'signature': original_signature,  # Keep original signature
-                'credentials': {
-                    'publicKey': public_key,
-                    'signature': original_signature,  # Keep original signature
-                    'signTransaction': True,
-                    'signAllTransactions': True,
-                    'connected': True
-                }
-            }
-
-            # Verify token using the dedicated method
-            try:
-                token_info = await self._verify_token(params['asset'])
-                params['token_data'] = token_info
-                token_address = token_info['address']
-            except Exception as token_error:
-                logging.error(f"Token verification failed: {str(token_error)}")
+            # Get token info and address
+            token_info = await self.get_token_info(params.get('asset'))
+            token_address = token_info.get('address')
+            if not token_address:
                 return {
                     'success': False,
-                    'error': 'token_verification_failed',
-                    'details': str(token_error),
-                    'user_message': 'Could not verify token. Please check the symbol/address.'
+                    'error': 'Invalid token',
+                    'code': 'TOKEN_NOT_FOUND'
                 }
 
             # Format parameters for agent-kit trade
@@ -401,22 +378,17 @@ class SolanaService:
                 'tokenOut': token_address,
                 'slippageBps': params.get('slippage', 100),
                 'token_data': token_info,
-                'wallet': trade_wallet_info,
-                'sessionId': session_id,
-                'mode': 'trade'  # Add mode parameter
+                'wallet': wallet_info,
+                'sessionId': session_id  # Add session ID
             }
 
-            logging.info(f"Executing trade with params: {swap_params}")
-            result = await self._call_agent_kit('trade', swap_params)
+            # Use session ID in headers
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Trading-Session': session_id  # Use session ID
+            }
 
-            if not result.get('success'):
-                return {
-                    'success': False,
-                    'error': result.get('error', 'Trade execution failed'),
-                    'details': result,
-                    'user_message': result.get('user_message', 'Failed to execute trade')
-                }
-
+            result = await self._call_agent_kit('trade', swap_params, headers=headers)
             return result
 
         except Exception as e:
