@@ -7,6 +7,7 @@ import uuid
 import aiohttp
 import os
 import json
+from memory.utils.supabase_helpers import safe_supabase_execute, handle_supabase_response
 
 class SolanaService:
     """Solana utilities that coordinate with frontend agent-kit"""
@@ -119,19 +120,20 @@ class SolanaService:
             # Check existing session
             current_time = datetime.now().isoformat()
             
-            # Handle Supabase response correctly
-            result = await self.supabase.table('trading_sessions').select('*').eq('public_key', public_key).eq('is_active', True).gt('expires_at', current_time).execute()
+            # Use safe_supabase_execute instead of direct execute()
+            success, result = await safe_supabase_execute(
+                self.supabase.table('trading_sessions')
+                    .select('*')
+                    .eq('public_key', public_key)
+                    .eq('is_active', True)
+                    .gt('expires_at', current_time),
+                error_message="Error checking existing session"
+            )
             
-            data = result.data if hasattr(result, 'data') else []
-            error = result.error if hasattr(result, 'error') else None
-            
-            if error:
-                logging.error(f"Error checking session: {error}")
-                raise Exception(f"Session check failed: {error}")
-            
-            # If we have an active session, use it
-            if data and len(data) > 0:
-                session = data[0]
+            if not success:
+                logging.warning(f"Session check failed: {result}")
+            elif result and len(result) > 0:
+                session = result[0]
                 return {
                     'success': True,
                     'wallet_info': wallet_info,
@@ -139,7 +141,8 @@ class SolanaService:
                     'expiresAt': session['expires_at']
                 }
 
-            # Otherwise, create a new session
+            # Initialize new session with agent-kit
+            logging.info("No active session found, initializing new session")
             session_result = await self._call_agent_kit('initSession', {
                 'wallet': {
                     'publicKey': public_key,
@@ -158,21 +161,20 @@ class SolanaService:
                 }
 
             # Store new session
-            try:
-                # Store in Supabase
-                store_result = await self.supabase.table('trading_sessions').upsert({
+            success, store_result = await safe_supabase_execute(
+                self.supabase.table('trading_sessions').upsert({
                     'public_key': public_key,
-                    'signature': session_result['sessionId'],  # Use new session ID
+                    'signature': session_result['sessionId'],
                     'expires_at': datetime.fromtimestamp(session_result['expiresAt'] / 1000).isoformat(),
-                    'is_active': True
-                }).execute()
-                
-                store_error = store_result.error if hasattr(store_result, 'error') else None
-                if store_error:
-                    logging.warning(f"Failed to store session but continuing: {store_error}")
-            except Exception as e:
-                logging.warning(f"Session storage error (continuing): {e}")
-            
+                    'is_active': True,
+                    'wallet_data': wallet_info
+                }),
+                error_message="Failed to store session"
+            )
+
+            if not success:
+                logging.warning(f"Failed to store session (continuing): {store_result}")
+
             return {
                 'success': True,
                 'sessionId': session_result['sessionId'],
