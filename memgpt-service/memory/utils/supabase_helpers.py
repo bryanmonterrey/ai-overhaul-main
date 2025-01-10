@@ -3,22 +3,24 @@
 import logging
 from typing import Tuple, Any
 from postgrest import APIError
-from postgrest.exceptions import APIError as PostgRESTAPIError
 
-async def safe_supabase_execute(query, error_message="Failed to execute query"):
+async def safe_supabase_execute(query, error_message="Failed to execute query") -> Tuple[bool, Any]:
+    """Execute a Supabase query safely without awaiting"""
     try:
-        # For Python Supabase client, we don't await the execute() call
-        response = query.execute()  # Remove await here
+        # Execute without await
+        response = query.execute()
         
+        # Check for errors using hasattr to avoid attribute errors
         if hasattr(response, 'error') and response.error:
             logging.error(f"{error_message}: {response.error}")
             return False, response.error
             
-        return True, response.data
+        # Get data safely using hasattr
+        data = response.data if hasattr(response, 'data') else None
+        return True, data
         
     except Exception as e:
         logging.error(f"Unexpected error in Supabase execution: {str(e)}")
-        logging.error(str(e))
         return False, f"{error_message}: {str(e)}"
 
 def handle_supabase_response(response) -> Any:

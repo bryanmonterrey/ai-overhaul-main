@@ -16,6 +16,7 @@ import aiohttp
 from base58 import b58encode, b58decode
 import hashlib
 from solana.keypair import Keypair
+from memory.utils.supabase_helpers import safe_supabase_execute, handle_supabase_response
 
 @dataclass
 class ConsciousnessMetrics:
@@ -365,17 +366,18 @@ class RealTimeMonitor:
                 **data,
                 'timestamp': datetime.now().isoformat()
             }
-            # Remove await and use execute() directly
-            response = self.supabase.table('trade_executions')\
-                .insert(execution_data)\
-                .execute()
+            # Use safe_supabase_execute
+            success, result = await safe_supabase_execute(
+                self.supabase.table('trade_executions').insert(execution_data),
+                error_message="Failed to store trade execution"
+            )
             
-            if hasattr(response, 'error') and response.error:
-                logging.error(f"Supabase insert error: {response.error}")
-                raise Exception(f"Database insert failed: {response.error}")
+            if not success:
+                logging.error(f"Supabase insert error: {result}")
+                raise Exception(f"Database insert failed: {result}")
                 
-            return response.data if hasattr(response, 'data') else None
-            
+            return result
+
         except Exception as e:
             logging.error(f"Error storing trade execution: {str(e)}")
             raise
@@ -396,16 +398,21 @@ class RealTimeMonitor:
     async def handle_trade_update(self, tx_signature: str, status: str):
         """Handle trade status updates from frontend"""
         try:
-            # Remove await
-            response = self.supabase.table('trade_intents')\
-                .select('*')\
-                .eq('status', 'pending')\
-                .order('timestamp', desc=True)\
-                .limit(1)\
-                .execute()
+            success, result = await safe_supabase_execute(
+                self.supabase.table('trade_intents')
+                    .select('*')
+                    .eq('status', 'pending')
+                    .order('timestamp', desc=True)
+                    .limit(1),
+                error_message="Failed to get trade intent"
+            )
 
-            if response.data:
-                trade_intent = response.data[0]
+            if not success:
+                logging.error(f"Error getting trade intent: {result}")
+                return
+
+            if result:
+                trade_intent = result[0]
                 trade_id = trade_intent['id']
 
                 await self.broadcast_trading_update(
@@ -419,11 +426,15 @@ class RealTimeMonitor:
                     channel="trading_updates"
                 )
 
-                # Remove await
-                self.supabase.table('trade_intents')\
-                    .update({'status': status, 'tx_signature': tx_signature})\
-                    .eq('id', trade_id)\
-                    .execute()
+                success, update_result = await safe_supabase_execute(
+                    self.supabase.table('trade_intents')
+                        .update({'status': status, 'tx_signature': tx_signature})
+                        .eq('id', trade_id),
+                    error_message="Failed to update trade intent"
+                )
+
+                if not success:
+                    logging.error(f"Error updating trade intent: {update_result}")
 
         except Exception as e:
             logging.error(f"Error handling trade update: {str(e)}")

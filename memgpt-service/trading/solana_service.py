@@ -120,23 +120,26 @@ class SolanaService:
             # Check existing session
             current_time = datetime.now().isoformat()
             
-            # Use safe_supabase_execute instead of direct execute()
             success, result = await safe_supabase_execute(
                 self.supabase.table('trading_sessions')
                     .select('*')
                     .eq('public_key', public_key)
                     .eq('is_active', True)
                     .gt('expires_at', current_time),
-                error_message="Error checking existing session"
+                error_message="Failed to verify session"
             )
-            
+
             if not success:
-                logging.warning(f"Session check failed: {result}")
-            elif result and len(result) > 0:
+                logging.error(f"Session verification failed: {result}")
+                return {
+                    'success': False,
+                    'error': str(result)
+                }
+
+            if result and len(result) > 0:
                 session = result[0]
                 return {
                     'success': True,
-                    'wallet_info': wallet_info,
                     'sessionId': session['signature'],
                     'expiresAt': session['expires_at']
                 }
