@@ -118,97 +118,72 @@ class SolanaService:
 
             # Check existing session
             current_time = datetime.now().isoformat()
-            try:
-                result = await self.supabase.table('trading_sessions')\
-                    .select('*')\
-                    .eq('public_key', public_key)\
-                    .eq('is_active', True)\
-                    .gt('expires_at', current_time)\
-                    .execute()
-                    
-                # Convert Supabase response to dict if needed
-                session_data = result.data[0] if result.data and len(result.data) > 0 else None
-                
-                if session_data:
-                    return {
-                        'success': True,
-                        'wallet_info': wallet_info,
-                        'sessionId': session_data.get('signature'),
-                        'expiresAt': session_data.get('expires_at'),
-                        'signature': original_signature
-                    }
-            except Exception as e:
-                logging.warning(f"Error checking existing session: {e}")
+            
+            # Handle Supabase response correctly
+            result = await self.supabase.table('trading_sessions').select('*').eq('public_key', public_key).eq('is_active', True).gt('expires_at', current_time).execute()
+            
+            data = result.data if hasattr(result, 'data') else []
+            error = result.error if hasattr(result, 'error') else None
+            
+            if error:
+                logging.error(f"Error checking session: {error}")
+                raise Exception(f"Session check failed: {error}")
+            
+            # If we have an active session, use it
+            if data and len(data) > 0:
+                session = data[0]
+                return {
+                    'success': True,
+                    'wallet_info': wallet_info,
+                    'sessionId': session['signature'],
+                    'expiresAt': session['expires_at']
+                }
 
-            # Initialize new session with agent-kit
-            init_params = {
+            # Otherwise, create a new session
+            session_result = await self._call_agent_kit('initSession', {
                 'wallet': {
                     'publicKey': public_key,
                     'signature': original_signature,
                     'credentials': {
                         'publicKey': public_key,
-                        'signature': original_signature,
-                        'signTransaction': True,
-                        'signAllTransactions': True,
-                        'connected': True
+                        'signature': original_signature
                     }
                 }
-            }
-
-            session_result = await self._call_agent_kit('initSession', init_params)
+            })
 
             if not session_result.get('success'):
-                logging.error(f"Session verification failed: {session_result}")
                 return {
                     'success': False,
-                    'error': session_result.get('error', 'Session verification failed'),
-                    'code': session_result.get('code', 'SESSION_VERIFICATION_FAILED')
+                    'error': session_result.get('error', 'Session initialization failed')
                 }
 
-            # Store session in Supabase
+            # Store new session
             try:
-                expires_at = (datetime.now() + timedelta(hours=1)).isoformat()
-                session_data = {
+                # Store in Supabase
+                store_result = await self.supabase.table('trading_sessions').upsert({
                     'public_key': public_key,
-                    'signature': original_signature,
-                    'expires_at': expires_at,
-                    'is_active': True,
-                    'wallet_data': {
-                        'publicKey': public_key,
-                        'connected': True,
-                        'signature': original_signature,
-                        'timestamp': int(datetime.now().timestamp() * 1000)
-                    }
-                }
+                    'signature': session_result['sessionId'],  # Use new session ID
+                    'expires_at': datetime.fromtimestamp(session_result['expiresAt'] / 1000).isoformat(),
+                    'is_active': True
+                }).execute()
                 
-                result = await self.supabase.table('trading_sessions')\
-                    .upsert(session_data)\
-                    .execute()
-                
-                if hasattr(result, 'error') and result.error:
-                    logging.error(f"Failed to store session: {result.error}")
-                    # Continue anyway since we have a valid session from agent-kit
-                else:
-                    logging.info(f"Stored session in Supabase: {session_data}")
-
+                store_error = store_result.error if hasattr(store_result, 'error') else None
+                if store_error:
+                    logging.warning(f"Failed to store session but continuing: {store_error}")
             except Exception as e:
-                logging.error(f"Failed to store session: {e}")
-                # Continue since we have a valid session from agent-kit
-
+                logging.warning(f"Session storage error (continuing): {e}")
+            
             return {
                 'success': True,
-                'wallet_info': wallet_info,
-                'sessionId': session_result.get('sessionId'),
-                'expiresAt': session_result.get('expiresAt'),
-                'signature': original_signature
+                'sessionId': session_result['sessionId'],
+                'expiresAt': session_result['expiresAt']
             }
 
         except Exception as e:
-            logging.error(f"Session verification error: {e}")
+            logging.error(f"Session verification failed: {e}")
             return {
                 'success': False,
-                'error': str(e),
-                'code': 'SESSION_VERIFICATION_ERROR'
+                'error': str(e)
             }
 
     async def _verify_token(self, asset: str) -> Dict[str, Any]:
@@ -332,71 +307,51 @@ class SolanaService:
     async def execute_swap(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a swap transaction"""
         try:
-            # Verify wallet info
-            wallet_info = params.get('wallet')
-            if not wallet_info:
-                raise ValueError("No wallet info provided")
-            
-            # Get public key
-            public_key = (
-                wallet_info.get('publicKey') or 
-                wallet_info.get('credentials', {}).get('publicKey')
-            )
-            if not public_key:
-                raise ValueError("No public key found in wallet info")
-
-            # Verify session
-            session_result = await self._verify_session(wallet_info)
+            # Session verification
+            session_result = await self._verify_session(params['wallet'])
             if not session_result.get('success'):
                 return session_result
 
-            # Get session ID from session result
-            session_id = session_result.get('sessionId')
-            if not session_id:
-                return {
-                    'success': False,
-                    'error': 'No session ID returned from verification',
-                    'code': 'SESSION_ID_MISSING'
-                }
-
-            # Get token info and address
-            token_info = await self.get_token_info(params.get('asset'))
-            token_address = token_info.get('address')
-            if not token_address:
+            # Use the session ID from verification
+            session_id = session_result['sessionId']
+            
+            # Verify token
+            token_info = await self._verify_token(params['asset'])
+            if not token_info.get('address'):
                 return {
                     'success': False,
                     'error': 'Invalid token',
-                    'code': 'TOKEN_NOT_FOUND'
+                    'user_message': 'Token not found'
                 }
 
-            # Format parameters for agent-kit trade
+            # Build swap params
             swap_params = {
-                'outputMint': token_address,
+                'outputMint': token_info['address'],
                 'inputAmount': float(params['amount']),
                 'inputMint': self.token_addresses['SOL'],
                 'tokenIn': self.token_addresses['SOL'],
-                'tokenOut': token_address,
-                'slippageBps': params.get('slippage', 100),
+                'tokenOut': token_info['address'],
+                'slippageBps': 100,  # Default slippage
                 'token_data': token_info,
-                'wallet': wallet_info,
-                'sessionId': session_id  # Add session ID
+                'wallet': params['wallet'],
+                'sessionId': session_id  # Important: use new session ID
             }
 
-            # Use session ID in headers
+            # Call agent-kit with session ID in headers
             headers = {
                 'Content-Type': 'application/json',
-                'X-Trading-Session': session_id  # Use session ID
+                'X-Trading-Session': session_id  # Important: use new session ID
             }
 
-            result = await self._call_agent_kit('trade', swap_params, headers=headers)
+            result = await self._call_agent_kit('trade', swap_params, headers)
             return result
 
         except Exception as e:
-            logging.error(f"Swap execution error: {str(e)}")
+            logging.error(f"Swap execution error: {e}")
             return {
                 'success': False,
                 'error': str(e),
-                'user_message': 'Failed to execute swap. Please try again.'
+                'user_message': 'Trading error occurred. Please try again.'
             }
 
     async def get_token_data(self, token_address: str) -> Dict[str, Any]:
