@@ -367,15 +367,7 @@ class SolanaService:
     async def execute_swap(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a swap transaction"""
         try:
-            # Session verification
-            session_result = await self._verify_session(params['wallet'])
-            if not session_result.get('success'):
-                return session_result
-
-            # Use the session ID from verification
-            session_id = session_result['sessionId']
-            
-            # Verify token
+            # Verify token first
             token_info = await self._verify_token(params['asset'])
             if not token_info.get('address'):
                 return {
@@ -384,8 +376,8 @@ class SolanaService:
                     'user_message': 'Token not found'
                 }
 
-            # Build swap params
-            swap_params = {
+            # Build basic trade params
+            trade_params = {
                 'outputMint': token_info['address'],
                 'inputAmount': float(params['amount']),
                 'inputMint': self.token_addresses['SOL'],
@@ -393,17 +385,42 @@ class SolanaService:
                 'tokenOut': token_info['address'],
                 'slippageBps': 100,  # Default slippage
                 'token_data': token_info,
-                'wallet': params['wallet'],
-                'sessionId': session_id  # Important: use new session ID
+                'wallet': params['wallet']  # Use wallet as is for now
             }
 
-            # Call agent-kit with session ID in headers
+            # Session verification AFTER preparing basic params
+            session_result = await self._verify_session(params['wallet'])
+            if not session_result.get('success'):
+                # Session invalid or expired, try to initialize a new one
+                session_result = await self.init_trading_session(params['wallet'])
+                if not session_result.get('success'):
+                    return session_result
+
+            # Get the current valid session ID
+            session_id = session_result['sessionId']
+
+            # Update trade params with current session
+            trade_params['wallet'] = {
+                'publicKey': params['wallet']['publicKey'],
+                'credentials': {
+                    'publicKey': params['wallet']['publicKey'],
+                    'signature': session_id,
+                    'sessionSignature': session_id,
+                    'signTransaction': True,
+                    'signAllTransactions': True,
+                    'connected': True
+                }
+            }
+            trade_params['sessionId'] = session_id
+
+            # Call agent-kit with current session ID
             headers = {
                 'Content-Type': 'application/json',
-                'X-Trading-Session': session_id  # Important: use new session ID
+                'X-Trading-Session': session_id
             }
 
-            result = await self._call_agent_kit('trade', swap_params, headers)
+            logging.info(f"Executing trade with session ID: {session_id}")
+            result = await self._call_agent_kit('trade', trade_params, headers)
             return result
 
         except Exception as e:
