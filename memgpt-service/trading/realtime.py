@@ -287,7 +287,10 @@ class RealTimeMonitor:
                 **params,  # Keep existing params
                 'wallet': {
                     'publicKey': wallet_info.get('publicKey') or wallet_info.get('credentials', {}).get('publicKey'),
-                    'credentials': wallet_info.get('credentials', {}),
+                    'signature': wallet_info.get('signature'),  # Keep the signature structure
+                    'credentials': {  # Keep the full credentials structure
+                        **wallet_info.get('credentials', {}),  # Copy all existing credentials
+                    }
                 }
             }
 
