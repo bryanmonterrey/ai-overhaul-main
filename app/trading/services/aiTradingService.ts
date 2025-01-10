@@ -21,6 +21,7 @@ class AITradingService {
   private reconnectAttempts = 0;
   private readonly MAX_RECONNECT_ATTEMPTS = 5;
   private readonly RECONNECT_INTERVAL = 2000;
+  private sessionId: string | null = null;
 
   constructor() {
     this.supabase = createClient(
@@ -147,10 +148,13 @@ class AITradingService {
           ...trade,
           priceData,
           tokenData,
-          asset: trade.token,  // Add this
-          amount: trade.amount, // Add this
+          asset: trade.token,
+          amount: trade.amount,
           side: trade.side,
-          wallet: trade.wallet
+          wallet: {
+            ...trade.wallet,
+            sessionId: this.sessionId // Use the stored session ID
+          }
         })
       });
   
