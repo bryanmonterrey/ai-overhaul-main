@@ -91,15 +91,14 @@ class SolanaService:
             # Build complete initialization parameters
             init_params = {
                 'wallet': {
-                    'publicKey': public_key,
-                    'signature': signature,
+                    'publicKey': wallet_info['publicKey'],
+                    'signature': wallet_info['signature'],  # Use original wallet signature
                     'credentials': {
-                        'publicKey': public_key,
-                        'signature': signature,
+                        'publicKey': wallet_info['publicKey'],
+                        'sessionId': None,  # Will be filled by frontend
                         'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
                         'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
-                        'connected': wallet_info.get('credentials', {}).get('connected', True),
-                        'sessionSignature': signature
+                        'connected': wallet_info.get('credentials', {}).get('connected', True)
                     }
                 }
             }
