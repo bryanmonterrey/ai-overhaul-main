@@ -66,7 +66,7 @@ export async function POST(req: Request) {
       }
 
       // Get session from database
-      const { data: session } = await serverSupabase
+      const { data: session, error: sessionError } = await serverSupabase
         .from('trading_sessions')
         .select()
         .eq('public_key', publicKey)
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
         .gt('expires_at', new Date().toISOString())
         .single();
 
-      if (!session) {
+      if (sessionError || !session) {
         return NextResponse.json({
           error: 'No active trading session. Please initialize a session first.',
           code: 'SESSION_INVALID'
@@ -101,7 +101,9 @@ export async function POST(req: Request) {
       // Verify initial signature
       const sessionResult = await verifySession({
         publicKey: params.wallet.publicKey,
-        signature: params.wallet.signature
+        credentials: {
+          signature: params.wallet.signature
+        }
       });
 
       if (!sessionResult.success) {
@@ -118,8 +120,28 @@ export async function POST(req: Request) {
       });
     }
 
-    // Handle other actions...
     switch (action) {
+      case 'validateSession':
+        if (!params?.sessionSignature || !params?.publicKey) {
+          return NextResponse.json({
+            error: 'Session signature and public key required'
+          }, { status: 400 });
+        }
+        const { data, error } = await serverSupabase
+          .from('trading_sessions')
+          .select()
+          .eq('public_key', params.publicKey)
+          .eq('signature', params.sessionSignature)
+          .eq('is_active', true)
+          .gt('expires_at', new Date().toISOString())
+          .limit(1)
+          .single();
+
+        return NextResponse.json({
+          valid: !!data && !error,
+          timestamp: new Date().toISOString()
+        });
+
       case 'getTokenData':
         try {
           const kit = createAgentKit();
@@ -158,7 +180,7 @@ export async function POST(req: Request) {
         return NextResponse.json({
           error: 'Invalid action',
           action: action,
-          supported: ['initSession', 'trade', 'getTokenData', 'getPrice']
+          supported: ['initSession', 'trade', 'getTokenData', 'getPrice', 'validateSession']
         }, { status: 400 });
     }
 
