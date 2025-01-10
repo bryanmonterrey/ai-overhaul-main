@@ -424,6 +424,12 @@ class TradingChat:
             if not wallet_info:
                 raise ValueError("No wallet info provided")
 
+            # Store original signature first
+            original_signature = (
+                wallet_info.get('credentials', {}).get('signature') or
+                wallet_info.get('signature')
+            )
+
             logging.info(f"Got wallet info: {json.dumps(wallet_info, default=str)}")
 
             # Initialize trading session first
@@ -435,13 +441,15 @@ class TradingChat:
                     'code': session_result.get('code', 'SESSION_INIT_ERROR')
                 }
                 
-            # Add session ID to wallet credentials
+            # Add session ID to wallet credentials while preserving original signature
             session_id = session_result.get('sessionId')
             if session_id:
                 if not wallet_info.get('credentials'):
                     wallet_info['credentials'] = {}
-                wallet_info['credentials']['sessionSignature'] = session_id
-                wallet_info['credentials']['signature'] = session_id
+                # Add session ID without modifying signature
+                wallet_info['credentials']['sessionId'] = session_id
+                wallet_info['credentials']['sessionSignature'] = original_signature  # Use original signature here
+                wallet_info['credentials']['signature'] = original_signature  # Keep original signature
 
             # Format trading parameters with session info
             trade_params = {
@@ -450,11 +458,13 @@ class TradingChat:
                 'original_amount': params.get('amount'),
                 'wallet': {
                     'publicKey': wallet_info.get('publicKey'),
-                    'signature': session_id,
+                    'sessionId': session_id,  # Add session ID
+                    'signature': original_signature,  # Keep original signature
                     'credentials': {
                         'publicKey': wallet_info.get('publicKey'),
-                        'signature': session_id,
-                        'sessionSignature': session_id,
+                        'signature': original_signature,  # Keep original signature
+                        'sessionSignature': original_signature,  # Use original signature
+                        'sessionId': session_id,  # Add session ID separately
                         'signTransaction': True,
                         'signAllTransactions': True,
                         'connected': True

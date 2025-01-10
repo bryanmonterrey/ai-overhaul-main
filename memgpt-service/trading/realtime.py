@@ -281,24 +281,40 @@ class RealTimeMonitor:
                 raise ValueError("No wallet provided for trade execution")
 
             trade_id = str(uuid.uuid4())
-            
-            # Keep the session ID consistent
-            session_id = (
-                wallet_info.get('signature') or  # Try signature first (should be session ID)
-                wallet_info.get('credentials', {}).get('sessionSignature') or  # Then sessionSignature
-                wallet_info.get('credentials', {}).get('signature')  # Finally credentials signature
+
+            # Get original signature FIRST and keep it separate
+            original_signature = (
+                wallet_info.get('credentials', {}).get('signature') or
+                wallet_info.get('signature')
             )
+
+            # Get session ID separately
+            session_id = (
+                wallet_info.get('sessionId') or
+                wallet_info.get('credentials', {}).get('sessionId') or
+                wallet_info.get('credentials', {}).get('sessionSignature')
+            )
+
+            if not original_signature:
+                logging.error("No original signature found in wallet info")
+                return {
+                    'success': False,
+                    'error': 'Missing original signature',
+                    'user_message': 'Wallet authentication failed'
+                }
 
             # Add wallet info to trade params with consistent session ID
             trade_params = {
                 **params,  # Keep existing params
                 'wallet': {
                     'publicKey': wallet_info.get('publicKey'),
-                    'signature': session_id,
+                    'sessionId': session_id,
+                    'signature': original_signature,  # Keep original signature
                     'credentials': {
                         'publicKey': wallet_info.get('publicKey'),
-                        'signature': session_id,
-                        'sessionSignature': session_id,
+                        'sessionId': session_id,
+                        'signature': original_signature,  # Keep original signature separate
+                        'sessionSignature': session_id,  # Session signature is session ID
                         'signTransaction': True,
                         'signAllTransactions': True,
                         'connected': True
@@ -307,7 +323,8 @@ class RealTimeMonitor:
             }
 
             try:
-                logging.info(f"Executing swap with params: {trade_params}")
+                logging.info(f"Executing swap with original signature: {original_signature}")
+                logging.info(f"and session ID: {session_id}")
                 # Execute the swap
                 swap_result = await self.solana_service.execute_swap(trade_params)
                 
