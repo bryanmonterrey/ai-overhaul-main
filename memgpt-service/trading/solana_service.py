@@ -410,6 +410,14 @@ class SolanaService:
 
     async def execute_swap(self, params: Dict[str, Any]) -> Dict[str, Any]:
         try:
+            # Get original signature FIRST and keep it separate
+            original_signature = (
+                params['wallet'].get('credentials', {}).get('signature') or
+                params['wallet'].get('signature')
+            )
+
+            logging.info(f"Original signature retrieved: {original_signature}")
+            
             # Store original session ID if it exists
             original_session_id = (
                 params['wallet'].get('sessionId') or
@@ -432,23 +440,22 @@ class SolanaService:
             session_id = original_session_id if original_session_id else session_result['sessionId']
             logging.info(f"Using verified session ID for swap: {session_id}")
 
-            # Update the wallet credentials with the valid session ID
+            # Update the wallet credentials with both session ID and original signature
             wallet_with_session = {
                 'publicKey': params['wallet']['publicKey'],
-                'sessionId': session_id,  # Consistent session ID
-                'signature': session_id,  # Use session ID for signature
+                'sessionId': session_id,  # Add session ID
+                'signature': original_signature,  # Keep original signature
                 'credentials': {
                     'publicKey': params['wallet']['publicKey'],
-                    'sessionId': session_id,  # Add sessionId here
-                    'signature': session_id,  # Use same session ID
-                    'sessionSignature': session_id,  # Use same session ID
+                    'sessionId': session_id,  # Add session ID
+                    'signature': original_signature,  # Keep original signature
+                    'sessionSignature': session_id,  # Use session ID for session-specific signature
                     'signTransaction': True,
                     'signAllTransactions': True,
                     'connected': True
                 }
             }
 
-            # Log the complete wallet info for debugging
             logging.info(f"Prepared wallet with session: {wallet_with_session}")
 
             # Verify token
@@ -470,19 +477,20 @@ class SolanaService:
                 'slippageBps': 100,
                 'token_data': token_info,
                 'wallet': wallet_with_session,  # Use the updated wallet info
-                'sessionId': session_id,  # Explicitly include session ID
-                'originalSessionId': original_session_id  # Include original for reference
+                'sessionId': session_id,  # Add session ID
+                'originalSignature': original_signature,  # Keep track of original signature
+                'originalSessionId': original_session_id if original_session_id else ''  # Keep original session ID
             }
 
             # Call agent-kit with session header
             headers = {
                 'Content-Type': 'application/json',
                 'X-Trading-Session': session_id,
-                'X-Original-Session': original_session_id if original_session_id else ''
+                'X-Original-Signature': original_signature
             }
 
             # Log the final request details
-            logging.info(f"Making trade request with session ID: {session_id}")
+            logging.info(f"Making trade request with session ID: {session_id} and signature: {original_signature}")
             
             result = await self._call_agent_kit('trade', trade_params, headers)
             return result
