@@ -74,6 +74,17 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit {
                             wallet.credentials?.signature ||
                             wallet.credentials?.sessionSignature;
 
+            const walletInfo = {
+                publicKey,
+                signature,  // Move to top level
+                credentials: {
+                    ...wallet.credentials,
+                    signature,  // Keep in credentials too
+                    sessionSignature: signature,
+                    publicKey
+                }
+            };
+
             if (!publicKey) {
                 return {
                     success: false,
@@ -124,7 +135,7 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit {
                     signature: signature,
                     expires_at: new Date(expiresAt).toISOString(),
                     is_active: true,
-                    wallet_data: wallet
+                    wallet_data: walletInfo
                 });
 
             this.activeSessions.set(publicKey, session);
@@ -209,12 +220,37 @@ export class ExtendedSolanaAgentKit extends SolanaAgentKit {
         }
     ): Promise<string> {
         const { outputMint, amount, inputMint, slippageBps, publicKey, sessionId } = params;
-
+    
         if (!(await this.validateSession(publicKey, sessionId))) {
             throw new Error('Invalid or expired session');
         }
-
-        return this.trade(outputMint, amount, inputMint, slippageBps);
+    
+        // Restructure wallet info for backend
+        const wallet = {
+            publicKey,
+            signature: sessionId,  // Add top-level signature
+            sessionSignature: sessionId,  // Add top-level sessionSignature
+            credentials: {
+                publicKey,
+                signature: sessionId,
+                sessionSignature: sessionId,
+                signTransaction: true,
+                signAllTransactions: true,
+                connected: true
+            }
+        };
+    
+        // Create trade params with restructured wallet
+        const tradeParams = {
+            asset: params.outputMint.toString(),
+            amount: params.amount.toString(),
+            side: 'buy',
+            wallet,
+            slippageBps: params.slippageBps
+        };
+    
+        // Execute trade through base class method with prepared parameters
+        return await this.trade(outputMint, amount, inputMint, slippageBps);
     }
 
     private async getActiveSession(publicKey: string): Promise<ActiveSession | null> {
