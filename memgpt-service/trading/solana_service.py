@@ -60,11 +60,18 @@ class SolanaService:
             )
             
             # Try all possible signature locations with fallbacks
-            signature = (
-                wallet_info.get('credentials', {}).get('signature')  # First try credentials signature
+            original_signature = (
+                wallet_info.get('signature') or  # Try top level first
+                wallet_info.get('credentials', {}).get('signature')  # Then credentials
+            )
+
+            session_signature = (
+                wallet_info.get('sessionSignature') or  # Try top level first
+                wallet_info.get('credentials', {}).get('sessionSignature') or  # Then credentials
+                original_signature  # Fall back to original signature if no session signature
             )
             
-            logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(signature)}")
+            logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(session_signature)}")
             
             if not public_key:
                 return {
@@ -74,7 +81,7 @@ class SolanaService:
                     'message': 'Public key is required for session initialization'
                 }
                     
-            if not signature:
+            if not session_signature:
                 # Generate session message and ask frontend to sign
                 session_message = f"Trading session initialization for {public_key} at {datetime.now().isoformat()}"
                 return {
@@ -91,13 +98,14 @@ class SolanaService:
             init_params = {
                 'wallet': {
                     'publicKey': public_key,
-                    'signature': signature,      # Use the extracted signature
-                    'sessionId': session_id,     # Add session ID
+                    'signature': original_signature,      # Keep original signature at top level
+                    'sessionId': session_id,             # You already have this!
+                    'sessionSignature': session_signature, # Add the session signature here
                     'credentials': {
                         'publicKey': public_key,
-                        'signature': signature,  # Keep original signature in credentials
-                        'sessionId': session_id, # Add session ID to credentials
-                        'sessionSignature': signature,  # Use original signature as session signature
+                        'signature': original_signature,  # Keep original signature in credentials
+                        'sessionId': session_id,         # You already have this!
+                        'sessionSignature': session_signature,  # Add session signature in credentials too
                         'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
                         'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
                         'connected': wallet_info.get('credentials', {}).get('connected', True)
@@ -110,7 +118,7 @@ class SolanaService:
             # Store session in Supabase first - Fixed the query
             session_data = {
                 'public_key': public_key,
-                'signature': signature,
+                'signature': session_signature,
                 'session_id': session_id,
                 'expires_at': (datetime.now() + timedelta(days=1)).isoformat(),
                 'is_active': True,
@@ -135,7 +143,7 @@ class SolanaService:
             return {
                 'success': True,
                 'sessionId': session_id,
-                'signature': signature,
+                'signature': session_signature,
                 'publicKey': public_key,
                 'expiresAt': session_data['expires_at'],
                 'wallet': init_params['wallet']

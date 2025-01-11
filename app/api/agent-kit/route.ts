@@ -1,27 +1,37 @@
+// app/api/agent-kit/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import { TradingApi } from "../../trading/services/TradingApi";
 import { headers } from 'next/headers';
+import { PublicKey, Transaction, VersionedTransaction } from "@solana/web3.js";
+import { WebWalletAgentKit } from "../../trading/WebWalletAgentKit";
+import { createClient } from '@supabase/supabase-js';
 
-// Initialize trading API with environment variable validation
-function initializeTradingApi() {
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
-    const baseUrl = process.env.NEXT_PUBLIC_API_URL;
-    const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
+// Initialize Supabase
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+function initializeAgentKit(wallet: any) {
+    const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com';
     const openaiKey = process.env.OPENAI_API_KEY;
 
-    // Generate a random base58 key for readonly mode
-    const readonlyKey = 'readonly';  // Use readonly mode instead of trying to decode a key
+    const walletAdapter = {
+        publicKey: new PublicKey(wallet.publicKey),
+        sessionId: wallet.sessionId,
+        sessionSignature: wallet.sessionSignature || wallet.signature,
+        originalSignature: wallet.signature,
+        signTransaction: async (tx: Transaction | VersionedTransaction): Promise<Transaction> => tx as Transaction,
+        signAllTransactions: async (txs: (Transaction | VersionedTransaction)[]): Promise<Transaction[]> => txs as Transaction[]
+    };
 
-    return new TradingApi({
-        wsUrl: wsUrl || 'ws://localhost:3000',
-        baseUrl: baseUrl || 'http://localhost:3000',
-        rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
-        openaiApiKey: openaiKey || '',
-        privateKey: readonlyKey  // Pass readonly mode
-    });
+    return new WebWalletAgentKit(
+        walletAdapter,
+        rpcUrl,
+        {
+            OPENAI_API_KEY: openaiKey || '',
+            supabase
+        }
+    );
 }
-
-const tradingApi = initializeTradingApi();
 
 export async function POST(req: NextRequest) {
     try {
@@ -30,33 +40,31 @@ export async function POST(req: NextRequest) {
         const { action, params } = body;
 
         // Enhanced session handling
-        const tradeSession = headersList.get('x-trading-session');
-        const walletSignature = headersList.get('x-wallet-signature');
+        const sessionId = headersList.get('x-trading-session');
         const originalSignature = headersList.get('x-original-signature');
         
-        // Separate user context from session info
-        const { context, ...otherParams } = params;
-        const { userId, userRole, ...sessionContext } = context || {};
-
-        // Prepare wallet info with proper session structure
+        // Update wallet info with session data
         if (params.wallet) {
-            const originalSignature = params.wallet.credentials?.signature;
-
+            console.log('Updating wallet info with session data');
             params.wallet = {
                 ...params.wallet,
-                signature: originalSignature,  // Use original signature
-                sessionId: tradeSession,      // UUID for session tracking
+                sessionId: sessionId,
+                sessionSignature: originalSignature,
+                signature: originalSignature,
                 credentials: {
                     ...params.wallet.credentials,
-                    signature: originalSignature,     // Keep original signature
-                    sessionId: tradeSession,          // Session ID for tracking
-                    sessionSignature: originalSignature, // Use original signature, not session ID
+                    sessionId: sessionId,
+                    sessionSignature: originalSignature,
+                    signature: originalSignature,
                     signTransaction: true,
                     signAllTransactions: true,
                     connected: true
                 }
             };
         }
+
+        // Initialize agent kit with wallet
+        const agent = initializeAgentKit(params.wallet);
 
         switch (action) {
             case 'initSession':
@@ -68,8 +76,13 @@ export async function POST(req: NextRequest) {
                     }, { status: 400 });
                 }
 
-                const sessionResult = await tradingApi.initSession(params.wallet);
-                return NextResponse.json(sessionResult);
+                // Store session info
+                return NextResponse.json({
+                    success: true,
+                    sessionId: params.wallet.sessionId,
+                    sessionSignature: params.wallet.sessionSignature,
+                    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+                });
 
             case 'trade':
                 if (!params.wallet) {
@@ -80,58 +93,23 @@ export async function POST(req: NextRequest) {
                     }, { status: 400 });
                 }
 
-                const tradeStream = await tradingApi.executeTrade({
-                    inputMint: params.inputMint,
-                    outputMint: params.outputMint,
-                    amount: params.amount,
-                    slippage: params.slippage || 100, // Default 1% slippage
-                    wallet: params.wallet
-                });
-
-                return new Response(
-                    new ReadableStream({
-                        start(controller) {
-                            const subscription = tradeStream.subscribe({
-                                next: (value) => {
-                                    controller.enqueue(
-                                        new TextEncoder().encode(
-                                            `data: ${JSON.stringify(value)}\n\n`
-                                        )
-                                    );
-                                },
-                                error: (error) => {
-                                    console.error('Trade stream error:', error);
-                                    controller.enqueue(
-                                        new TextEncoder().encode(
-                                            `data: ${JSON.stringify({
-                                                success: false,
-                                                error: error.message || 'Trade execution failed',
-                                                code: 'TRADE_STREAM_ERROR'
-                                            })}\n\n`
-                                        )
-                                    );
-                                    controller.close();
-                                },
-                                complete: () => {
-                                    controller.close();
-                                }
-                            });
-
-                            return () => subscription.unsubscribe();
-                        }
-                    }),
-                    {
-                        headers: {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            'Connection': 'keep-alive'
-                        }
-                    }
+                const tradeResult = await agent.trade(
+                    new PublicKey(params.outputMint),
+                    params.amount,
+                    params.inputMint ? new PublicKey(params.inputMint) : undefined,
+                    params.slippage || 100
                 );
 
+                return NextResponse.json({
+                    success: true,
+                    signature: tradeResult
+                });
+
+
+
             case 'getTokenData':
-                const tokenData = await tradingApi.getTokenInfo(params.mint);
-                return NextResponse.json(tokenData);
+                const tokenData = await agent.getTokenDataByAddress(params.mint);
+                return NextResponse.json({ success: true, data: tokenData });
 
             case 'getPrice':
                 if (!params.mint) {
@@ -140,42 +118,18 @@ export async function POST(req: NextRequest) {
                         { status: 400 }
                     );
                 }
-                const price = await tradingApi.getTokenPrice(params.mint);
+                const price = await agent.fetchTokenPrice(params.mint);
                 return NextResponse.json({ success: true, price });
 
             case 'getRoutes':
-                const routes = await tradingApi.getRoutes(
+                const routes = await agent.getRoutes(
                     params.inputMint,
                     params.outputMint,
                     params.amount
                 );
                 return NextResponse.json(routes);
 
-            case 'analyzeMarket':
-                const analysis = await tradingApi.analyzeMarket(params.asset);
-                return NextResponse.json(analysis);
-
-            case 'streamChat':
-                if (!params.messages || !Array.isArray(params.messages)) {
-                    return NextResponse.json(
-                        { success: false, error: 'Invalid messages format' },
-                        { status: 400 }
-                    );
-                }
-
-                const chatStream = await tradingApi.processTradingChat(
-                    params.messages,
-                    params.wallet
-                );
-
-                return new Response(chatStream, {
-                    headers: {
-                        'Content-Type': 'text/event-stream',
-                        'Cache-Control': 'no-cache',
-                        'Connection': 'keep-alive'
-                    }
-                });
-
+                
             case 'validateSession':
                 if (!params.wallet?.publicKey) {
                     return NextResponse.json({
@@ -185,14 +139,11 @@ export async function POST(req: NextRequest) {
                     }, { status: 400 });
                 }
 
-                const validationResult = await tradingApi.validateSession(
-                    params.wallet.publicKey,
-                    tradeSession || ''
-                );
+                // Use the agent's session validation
+                const sessionInfo = agent.getSessionInfo();
                 return NextResponse.json({ 
-                    success: true, 
-                    valid: validationResult,
-                    sessionId: tradeSession 
+                    success: true,
+                    ...sessionInfo
                 });
 
             default:
@@ -204,7 +155,8 @@ export async function POST(req: NextRequest) {
     } catch (e: any) {
         console.error('Agent kit error:', e);
 
-        // Enhanced error handling
+
+
         const errorResponse = {
             success: false,
             error: e.message || 'Internal server error',
@@ -212,7 +164,7 @@ export async function POST(req: NextRequest) {
             timestamp: new Date().toISOString()
         };
 
-        // Special handling for session errors
+        console.log('Error message:', e.message);
         if (e.message?.includes('session')) {
             return NextResponse.json({
                 ...errorResponse,
@@ -234,12 +186,11 @@ export async function GET() {
         features: [
             'trading',
             'market analysis',
-            'portfolio management',
-            'streaming chat'
+            'portfolio management'
         ]
     });
 }
 
-// Use nodejs runtime instead of edge to avoid env variable issues
+
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
