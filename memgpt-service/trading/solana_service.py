@@ -61,11 +61,7 @@ class SolanaService:
             
             # Try all possible signature locations with fallbacks
             signature = (
-                wallet_info.get('signature') or
-                wallet_info.get('credentials', {}).get('signature') or
-                wallet_info.get('credentials', {}).get('sessionProof') or
-                wallet_info.get('sessionSignature') or
-                wallet_info.get('credentials', {}).get('sessionSignature')
+                wallet_info.get('credentials', {}).get('signature')  # First try credentials signature
             )
             
             logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(signature)}")
@@ -87,15 +83,21 @@ class SolanaService:
                     'session_message': session_message,
                     'public_key': public_key
                 }
+            
+            # Create new session ID
+            session_id = str(uuid.uuid4())
                         
-            # Build complete initialization parameters
+            # Build complete initialization parameters with correct signature handling
             init_params = {
                 'wallet': {
-                    'publicKey': wallet_info['publicKey'],
-                    'signature': wallet_info['signature'],  # Use original wallet signature
+                    'publicKey': public_key,
+                    'signature': signature,      # Use the extracted signature
+                    'sessionId': session_id,     # Add session ID
                     'credentials': {
-                        'publicKey': wallet_info['publicKey'],
-                        'sessionId': None,  # Will be filled by frontend
+                        'publicKey': public_key,
+                        'signature': signature,  # Keep original signature in credentials
+                        'sessionId': session_id, # Add session ID to credentials
+                        'sessionSignature': signature,  # Use original signature as session signature
                         'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
                         'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
                         'connected': wallet_info.get('credentials', {}).get('connected', True)
@@ -104,47 +106,40 @@ class SolanaService:
             }
                 
             logging.info(f"Initializing session with params: {init_params}")
-            result = await self._call_agent_kit('initSession', init_params)
-                
-            if result.get('success'):
-                logging.info("Session initialization successful")
-                    
-                try:
-                    # Update wallet credentials with session info
-                    if session_id := result.get('sessionId'):
-                        init_params['wallet']['signature'] = session_id
-                        init_params['wallet']['credentials']['signature'] = session_id
-                        init_params['wallet']['credentials']['sessionSignature'] = session_id
-                        logging.info(f"Updated session ID: {session_id}")
-                        
-                    # Store session in Supabase
-                    current_time = datetime.now()
-                    expires_at = current_time + timedelta(days=1)
-                    
-                    session_data = {
-                        'public_key': public_key,
-                        'signature': result.get('sessionId'),
-                        'expires_at': expires_at.isoformat(),
-                        'is_active': True,
-                        'wallet_data': init_params['wallet']
-                    }
-                    
-                    success, store_result = await safe_supabase_execute(
-                        self.supabase.table('trading_sessions').upsert(session_data),
-                        error_message="Failed to store session"
-                    )
+            
+            # Store session in Supabase first - Fixed the query
+            session_data = {
+                'public_key': public_key,
+                'signature': signature,
+                'session_id': session_id,
+                'expires_at': (datetime.now() + timedelta(days=1)).isoformat(),
+                'is_active': True,
+                'wallet_data': init_params['wallet']
+            }
+            
+            # Changed this part to remove .select()
+            success, store_result = await safe_supabase_execute(
+                self.supabase.table('trading_sessions').insert(session_data),
+                error_message="Failed to store session"
+            )
 
-                    if not success:
-                        logging.warning(f"Failed to store session (continuing): {store_result}")
-                        
-                except Exception as e:
-                    logging.error(f"Error updating or storing session info (continuing): {str(e)}")
-                    # Continue since we have a valid session, even if storage failed
-                    
-                return result
-            else:
-                logging.error(f"Session initialization failed: {result.get('error')}")
-                return result
+            if not success:
+                logging.error(f"Failed to store session: {store_result}")
+                return {
+                    'success': False,
+                    'error': 'Failed to initialize session',
+                    'code': 'SESSION_STORE_ERROR'
+                }
+                
+            # Return successful result with session info
+            return {
+                'success': True,
+                'sessionId': session_id,
+                'signature': signature,
+                'publicKey': public_key,
+                'expiresAt': session_data['expires_at'],
+                'wallet': init_params['wallet']
+            }
                     
         except Exception as e:
             logging.error(f"Session initialization error: {str(e)}")

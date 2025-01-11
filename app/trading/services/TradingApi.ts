@@ -541,4 +541,12 @@ export class TradingApi {
     private emit(event: string, data: any): void {
         this.ws.emit(event, data);
     }
+
+    async initSession(wallet: any): Promise<any> {
+        return this.callAgentKit('initSession', { wallet });
+    }
+
+    async validateSession(publicKey: string, sessionId: string): Promise<any> {
+        return this.callAgentKit('validateSession', { publicKey, sessionId });
+    }
 }

@@ -1,16 +1,27 @@
-// app/api/agent-kit/route.ts
-
 import { NextRequest, NextResponse } from "next/server";
 import { TradingApi } from "../../trading/services/TradingApi";
 import { headers } from 'next/headers';
 
-// Initialize trading API
-const tradingApi = new TradingApi({
-    wsUrl: process.env.NEXT_PUBLIC_WS_URL!,
-    baseUrl: process.env.NEXT_PUBLIC_API_URL!,
-    rpcUrl: process.env.NEXT_PUBLIC_RPC_URL!,
-    openaiApiKey: process.env.OPENAI_API_KEY!
-});
+// Initialize trading API with environment variable validation
+function initializeTradingApi() {
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL;
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+    const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL;
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    // Generate a random base58 key for readonly mode
+    const readonlyKey = 'readonly';  // Use readonly mode instead of trying to decode a key
+
+    return new TradingApi({
+        wsUrl: wsUrl || 'ws://localhost:3000',
+        baseUrl: baseUrl || 'http://localhost:3000',
+        rpcUrl: rpcUrl || 'https://api.mainnet-beta.solana.com',
+        openaiApiKey: openaiKey || '',
+        privateKey: readonlyKey  // Pass readonly mode
+    });
+}
+
+const tradingApi = initializeTradingApi();
 
 export async function POST(req: NextRequest) {
     try {
@@ -18,59 +29,65 @@ export async function POST(req: NextRequest) {
         const body = await req.json();
         const { action, params } = body;
 
-        // Get session info from headers
-        const sessionId = headersList.get('x-trading-session');
+        // Enhanced session handling
+        const tradeSession = headersList.get('x-trading-session');
+        const walletSignature = headersList.get('x-wallet-signature');
         const originalSignature = headersList.get('x-original-signature');
+        
+        // Separate user context from session info
+        const { context, ...otherParams } = params;
+        const { userId, userRole, ...sessionContext } = context || {};
 
-        // Add session info to params if available
-        if (sessionId && originalSignature && params.wallet) {
+        // Prepare wallet info with proper session structure
+        if (params.wallet) {
+            const originalSignature = params.wallet.credentials?.signature;
+
             params.wallet = {
                 ...params.wallet,
-                sessionId,
-                originalSignature,
+                signature: originalSignature,  // Use original signature
+                sessionId: tradeSession,      // UUID for session tracking
                 credentials: {
                     ...params.wallet.credentials,
-                    sessionId,
-                    sessionSignature: sessionId,
-                    signature: originalSignature
+                    signature: originalSignature,     // Keep original signature
+                    sessionId: tradeSession,          // Session ID for tracking
+                    sessionSignature: originalSignature, // Use original signature, not session ID
+                    signTransaction: true,
+                    signAllTransactions: true,
+                    connected: true
                 }
             };
         }
 
         switch (action) {
             case 'initSession':
-                const messages = [
-                    {
-                        role: 'system' as const,
-                        content: 'Initialize trading session.'
-                    },
-                    {
-                        role: 'user' as const,
-                        content: 'Please initialize my trading session.'
-                    }
-                ];
-                
-                return new Response(
-                    await tradingApi.processTradingChat(messages, params.wallet),
-                    {
-                        headers: {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            'Connection': 'keep-alive'
-                        }
-                    }
-                );
+                if (!params.wallet?.credentials?.signature) {
+                    return NextResponse.json({
+                        success: false,
+                        error: 'Wallet signature required',
+                        code: 'MISSING_SIGNATURE'
+                    }, { status: 400 });
+                }
+
+                const sessionResult = await tradingApi.initSession(params.wallet);
+                return NextResponse.json(sessionResult);
 
             case 'trade':
+                if (!params.wallet) {
+                    return NextResponse.json({
+                        success: false,
+                        error: 'Wallet information required',
+                        code: 'MISSING_WALLET'
+                    }, { status: 400 });
+                }
+
                 const tradeStream = await tradingApi.executeTrade({
                     inputMint: params.inputMint,
                     outputMint: params.outputMint,
                     amount: params.amount,
-                    slippage: params.slippage,
+                    slippage: params.slippage || 100, // Default 1% slippage
                     wallet: params.wallet
                 });
 
-                // Convert Observable to ReadableStream
                 return new Response(
                     new ReadableStream({
                         start(controller) {
@@ -83,7 +100,17 @@ export async function POST(req: NextRequest) {
                                     );
                                 },
                                 error: (error) => {
-                                    controller.error(error);
+                                    console.error('Trade stream error:', error);
+                                    controller.enqueue(
+                                        new TextEncoder().encode(
+                                            `data: ${JSON.stringify({
+                                                success: false,
+                                                error: error.message || 'Trade execution failed',
+                                                code: 'TRADE_STREAM_ERROR'
+                                            })}\n\n`
+                                        )
+                                    );
+                                    controller.close();
                                 },
                                 complete: () => {
                                     controller.close();
@@ -136,16 +163,37 @@ export async function POST(req: NextRequest) {
                     );
                 }
 
-                return new Response(
-                    await tradingApi.processTradingChat(params.messages, params.wallet),
-                    {
-                        headers: {
-                            'Content-Type': 'text/event-stream',
-                            'Cache-Control': 'no-cache',
-                            'Connection': 'keep-alive'
-                        }
-                    }
+                const chatStream = await tradingApi.processTradingChat(
+                    params.messages,
+                    params.wallet
                 );
+
+                return new Response(chatStream, {
+                    headers: {
+                        'Content-Type': 'text/event-stream',
+                        'Cache-Control': 'no-cache',
+                        'Connection': 'keep-alive'
+                    }
+                });
+
+            case 'validateSession':
+                if (!params.wallet?.publicKey) {
+                    return NextResponse.json({
+                        success: false,
+                        error: 'Invalid session parameters',
+                        code: 'INVALID_SESSION'
+                    }, { status: 400 });
+                }
+
+                const validationResult = await tradingApi.validateSession(
+                    params.wallet.publicKey,
+                    tradeSession || ''
+                );
+                return NextResponse.json({ 
+                    success: true, 
+                    valid: validationResult,
+                    sessionId: tradeSession 
+                });
 
             default:
                 return NextResponse.json(
@@ -156,27 +204,29 @@ export async function POST(req: NextRequest) {
     } catch (e: any) {
         console.error('Agent kit error:', e);
 
-        // Special error handling for session-related errors
+        // Enhanced error handling
+        const errorResponse = {
+            success: false,
+            error: e.message || 'Internal server error',
+            code: e.code || 'UNKNOWN_ERROR',
+            timestamp: new Date().toISOString()
+        };
+
+        // Special handling for session errors
         if (e.message?.includes('session')) {
-            return NextResponse.json(
-                { 
-                    success: false, 
-                    error: e.message,
-                    code: 'SESSION_ERROR',
-                    session_message: 'Session initialization required'
-                },
-                { status: 401 }
-            );
+            return NextResponse.json({
+                ...errorResponse,
+                code: 'SESSION_ERROR',
+                session_message: 'Session initialization required'
+            }, { status: 401 });
         }
 
-        return NextResponse.json(
-            { success: false, error: e.message },
-            { status: e.status ?? 500 }
-        );
+        return NextResponse.json(errorResponse, { 
+            status: e.status ?? 500 
+        });
     }
 }
 
-// GET method for health check and version info
 export async function GET() {
     return NextResponse.json({
         status: 'healthy',
@@ -190,6 +240,6 @@ export async function GET() {
     });
 }
 
-// Add required server runtime configuration
-export const runtime = 'edge';  // Use edge runtime for better performance
-export const dynamic = 'force-dynamic';  // Ensure dynamic data fetching
+// Use nodejs runtime instead of edge to avoid env variable issues
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
