@@ -1,196 +1,195 @@
 // app/api/agent-kit/route.ts
 
-import { NextResponse } from 'next/server';
-import { verifySession } from '../../lib/auth/session-verification';
-import { tradeExecution } from '../../trading/services/execution';
-import { ExtendedSolanaAgentKit } from '../../trading/services/extended-agent-kit';
-import { Keypair } from '@solana/web3.js';
-import { bs58 } from '@coral-xyz/anchor/dist/cjs/utils/bytes';
-import { serverSupabase } from '../../lib/supabase/server-client';
+import { NextRequest, NextResponse } from "next/server";
+import { TradingApi } from "../../trading/services/TradingApi";
+import { headers } from 'next/headers';
 
-export const runtime = 'nodejs';
+// Initialize trading API
+const tradingApi = new TradingApi({
+    wsUrl: process.env.NEXT_PUBLIC_WS_URL!,
+    baseUrl: process.env.NEXT_PUBLIC_API_URL!,
+    rpcUrl: process.env.NEXT_PUBLIC_RPC_URL!,
+    openaiApiKey: process.env.OPENAI_API_KEY!
+});
 
-// Updated interface for session storage
-interface KitSession {
-  kit: ExtendedSolanaAgentKit;
-  expiresAt: number;
-  signature: string;
+export async function POST(req: NextRequest) {
+    try {
+        const headersList = await headers();
+        const body = await req.json();
+        const { action, params } = body;
+
+        // Get session info from headers
+        const sessionId = headersList.get('x-trading-session');
+        const originalSignature = headersList.get('x-original-signature');
+
+        // Add session info to params if available
+        if (sessionId && originalSignature && params.wallet) {
+            params.wallet = {
+                ...params.wallet,
+                sessionId,
+                originalSignature,
+                credentials: {
+                    ...params.wallet.credentials,
+                    sessionId,
+                    sessionSignature: sessionId,
+                    signature: originalSignature
+                }
+            };
+        }
+
+        switch (action) {
+            case 'initSession':
+                const messages = [
+                    {
+                        role: 'system' as const,
+                        content: 'Initialize trading session.'
+                    },
+                    {
+                        role: 'user' as const,
+                        content: 'Please initialize my trading session.'
+                    }
+                ];
+                
+                return new Response(
+                    await tradingApi.processTradingChat(messages, params.wallet),
+                    {
+                        headers: {
+                            'Content-Type': 'text/event-stream',
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive'
+                        }
+                    }
+                );
+
+            case 'trade':
+                const tradeStream = await tradingApi.executeTrade({
+                    inputMint: params.inputMint,
+                    outputMint: params.outputMint,
+                    amount: params.amount,
+                    slippage: params.slippage,
+                    wallet: params.wallet
+                });
+
+                // Convert Observable to ReadableStream
+                return new Response(
+                    new ReadableStream({
+                        start(controller) {
+                            const subscription = tradeStream.subscribe({
+                                next: (value) => {
+                                    controller.enqueue(
+                                        new TextEncoder().encode(
+                                            `data: ${JSON.stringify(value)}\n\n`
+                                        )
+                                    );
+                                },
+                                error: (error) => {
+                                    controller.error(error);
+                                },
+                                complete: () => {
+                                    controller.close();
+                                }
+                            });
+
+                            return () => subscription.unsubscribe();
+                        }
+                    }),
+                    {
+                        headers: {
+                            'Content-Type': 'text/event-stream',
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive'
+                        }
+                    }
+                );
+
+            case 'getTokenData':
+                const tokenData = await tradingApi.getTokenInfo(params.mint);
+                return NextResponse.json(tokenData);
+
+            case 'getPrice':
+                if (!params.mint) {
+                    return NextResponse.json(
+                        { success: false, error: 'Missing mint address' },
+                        { status: 400 }
+                    );
+                }
+                const price = await tradingApi.getTokenPrice(params.mint);
+                return NextResponse.json({ success: true, price });
+
+            case 'getRoutes':
+                const routes = await tradingApi.getRoutes(
+                    params.inputMint,
+                    params.outputMint,
+                    params.amount
+                );
+                return NextResponse.json(routes);
+
+            case 'analyzeMarket':
+                const analysis = await tradingApi.analyzeMarket(params.asset);
+                return NextResponse.json(analysis);
+
+            case 'streamChat':
+                if (!params.messages || !Array.isArray(params.messages)) {
+                    return NextResponse.json(
+                        { success: false, error: 'Invalid messages format' },
+                        { status: 400 }
+                    );
+                }
+
+                return new Response(
+                    await tradingApi.processTradingChat(params.messages, params.wallet),
+                    {
+                        headers: {
+                            'Content-Type': 'text/event-stream',
+                            'Cache-Control': 'no-cache',
+                            'Connection': 'keep-alive'
+                        }
+                    }
+                );
+
+            default:
+                return NextResponse.json(
+                    { success: false, error: 'Unknown action' },
+                    { status: 400 }
+                );
+        }
+    } catch (e: any) {
+        console.error('Agent kit error:', e);
+
+        // Special error handling for session-related errors
+        if (e.message?.includes('session')) {
+            return NextResponse.json(
+                { 
+                    success: false, 
+                    error: e.message,
+                    code: 'SESSION_ERROR',
+                    session_message: 'Session initialization required'
+                },
+                { status: 401 }
+            );
+        }
+
+        return NextResponse.json(
+            { success: false, error: e.message },
+            { status: e.status ?? 500 }
+        );
+    }
 }
 
-// Store active agent-kit instances with signatures
-const activeKits = new Map<string, KitSession>();
-
-function validateEnvironment() {
-  if (!process.env.NEXT_PUBLIC_RPC_URL) {
-    console.error('Missing RPC URL environment variable');
-    throw new Error('Server configuration error: Missing RPC URL');
-  }
-
-  if (!process.env.OPENAI_API_KEY) {
-    console.error('Missing OpenAI API key environment variable');
-    throw new Error('Server configuration error: Missing OpenAI API key');
-  }
-}
-
-function createAgentKit(): ExtendedSolanaAgentKit {
-  try {
-    return new ExtendedSolanaAgentKit(
-      'readonly',
-      process.env.NEXT_PUBLIC_RPC_URL!,
-      process.env.OPENAI_API_KEY!
-    );
-  } catch (error: any) {
-    console.error('Failed to create agent kit:', error);
-    throw new Error(`Agent kit initialization failed: ${error.message}`);
-  }
-}
-
-export async function POST(req: Request) {
-  try {
-    validateEnvironment();
-
-    const body = await req.json();
-    console.log('Request body:', body);
-
-    const { action, params } = body;
-
-    if (action === 'trade') {
-      const sessionId = req.headers.get('X-Trading-Session');
-      const publicKey = params.wallet?.publicKey;
-
-      if (!sessionId || !publicKey) {
-        return NextResponse.json({
-          error: 'Session ID and public key required',
-          code: 'SESSION_REQUIRED'
-        }, { status: 401 });
-      }
-
-      // Get session from database
-      const { data: session, error: sessionError } = await serverSupabase
-        .from('trading_sessions')
-        .select()
-        .or(`id.eq.${sessionId},signature.eq.${sessionId}`)
-        .eq('public_key', publicKey)
-        .eq('id', sessionId)  // Use id instead of signature
-        .eq('is_active', true)
-        .gt('expires_at', new Date().toISOString())
-        .single();
-
-      if (sessionError || !session) {
-        return NextResponse.json({
-          error: 'No active trading session. Please initialize a session first.',
-          code: 'SESSION_INVALID'
-        }, { status: 401 });
-      }
-
-      // Add session info to params
-      params.sessionInfo = session;
-
-      // Execute trade with session info
-      const tradeResult = await tradeExecution.executeTradeWithMEV(params, params.wallet);
-      return NextResponse.json(tradeResult);
-    }
-
-    if (action === 'initSession') {
-      if (!params?.wallet?.publicKey || !params?.wallet?.signature) {
-        return NextResponse.json({
-          error: 'Wallet and signature required for session initialization',
-          code: 'INVALID_SESSION_PARAMS'
-        }, { status: 400 });
-      }
-
-      // Verify initial signature
-      const sessionResult = await verifySession({
-        publicKey: params.wallet.publicKey,
-        credentials: {
-          signature: params.wallet.signature
-        }
-      });
-
-      if (!sessionResult.success) {
-        return NextResponse.json({
-          error: sessionResult.error || 'Session verification failed',
-          code: 'SESSION_VERIFICATION_FAILED'
-        }, { status: 401 });
-      }
-
-      return NextResponse.json({
-        success: true,
-        sessionId: sessionResult.sessionId,
-        expiresAt: sessionResult.expiresAt
-      });
-    }
-
-    switch (action) {
-      case 'validateSession':
-        if (!params?.sessionSignature || !params?.publicKey) {
-          return NextResponse.json({
-            error: 'Session signature and public key required'
-          }, { status: 400 });
-        }
-        const { data, error } = await serverSupabase
-          .from('trading_sessions')
-          .select()  
-          .eq('public_key', params.publicKey)
-          .eq('signature', params.sessionSignature)
-          .eq('is_active', true)
-          .gt('expires_at', new Date().toISOString())
-          .limit(1)
-          .single();
-
-        return NextResponse.json({
-          valid: !!data && !error,
-          timestamp: new Date().toISOString()
-        });
-
-      case 'getTokenData':
-        try {
-          const kit = createAgentKit();
-          let tokenData;
-          if (params.symbol) {
-            tokenData = await kit.getTokenDataByTicker(params.symbol);
-          } else if (params.mint) {
-            tokenData = await kit.getTokenDataByAddress(params.mint);
-          } else {
-            return NextResponse.json({
-              error: 'Either symbol or mint address required'
-            }, { status: 400 });
-          }
-          return NextResponse.json({ success: true, data: tokenData });
-        } catch (error: any) {
-          console.error('Token data error:', error);
-          return NextResponse.json({
-            error: 'Failed to fetch token data',
-            details: error.message
-          }, { status: 500 });
-        }
-
-      case 'getPrice':
-        try {
-          const kit = createAgentKit();
-          const price = await kit.fetchTokenPrice(params.mint);
-          return NextResponse.json({ success: true, price });
-        } catch (error: any) {
-          return NextResponse.json({
-            error: 'Failed to fetch price',
-            details: error.message
-          }, { status: 500 });
-        }
-
-      default:
-        return NextResponse.json({
-          error: 'Invalid action',
-          action: action,
-          supported: ['initSession', 'trade', 'getTokenData', 'getPrice', 'validateSession']
-        }, { status: 400 });
-    }
-
-  } catch (error: any) {
-    console.error('Agent-kit API error:', error);
+// GET method for health check and version info
+export async function GET() {
     return NextResponse.json({
-      error: error.message,
-      type: error.name,
-      code: error.code || 'UNKNOWN_ERROR'
-    }, { status: 500 });
-  }
+        status: 'healthy',
+        version: '1.0.0',
+        features: [
+            'trading',
+            'market analysis',
+            'portfolio management',
+            'streaming chat'
+        ]
+    });
 }
+
+// Add required server runtime configuration
+export const runtime = 'edge';  // Use edge runtime for better performance
+export const dynamic = 'force-dynamic';  // Ensure dynamic data fetching

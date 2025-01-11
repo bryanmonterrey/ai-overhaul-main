@@ -9,7 +9,7 @@ import {
   TokenInfo,
   TokenDeploymentResponse,
   NFTMintResponse 
-} from '../types/agent-kit';
+} from '../types/agent-kit2';
 import { Buffer } from 'buffer';
 import bs58 from 'bs58';
 import { createClient } from '@supabase/supabase-js';

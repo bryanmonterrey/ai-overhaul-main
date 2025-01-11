@@ -36,7 +36,7 @@ import {
   GibworkCreateTaskReponse
 } from '../types/agent-kit';
 import bs58 from 'bs58';
-import { ExtendedSolanaAgentKit } from './extended-agent-kit';
+import { ExtendedSolanaAgentKit } from './extended';
 import { createClient } from '@supabase/supabase-js';
 
 // Interface Definitions
