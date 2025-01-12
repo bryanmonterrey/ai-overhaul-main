@@ -12,30 +12,26 @@ const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 function initializeAgentKit(wallet: any) {
-   const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com';
-   const openaiKey = process.env.OPENAI_API_KEY;
+    const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const openaiKey = process.env.OPENAI_API_KEY;
 
-   // Create fixed-size dummy keypair
-   const dummyKeypair = Keypair.generate();
-   const dummyPrivateKey = bs58.encode(dummyKeypair.secretKey.slice(0, 32));
+    const walletAdapter = {
+        publicKey: new PublicKey(wallet.publicKey),
+        sessionId: wallet.sessionId,
+        sessionSignature: wallet.sessionSignature || wallet.signature,
+        originalSignature: wallet.signature,
+        signTransaction: async (tx) => tx,
+        signAllTransactions: async (txs) => txs
+    };
 
-   const walletAdapter = {
-       publicKey: new PublicKey(wallet.publicKey),
-       sessionId: wallet.sessionId,
-       sessionSignature: wallet.sessionSignature || wallet.signature,
-       originalSignature: wallet.signature,
-       signTransaction: async (tx) => tx,
-       signAllTransactions: async (txs) => txs
-   };
-
-   return new WebWalletAgentKit(
-       walletAdapter,
-       rpcUrl,
-       {
-           OPENAI_API_KEY: openaiKey || '',
-           supabase
-       }
-   );
+    return new WebWalletAgentKit(
+        walletAdapter,
+        rpcUrl,
+        {
+            OPENAI_API_KEY: openaiKey || '',
+            supabase
+        }
+    );
 }
 
 export async function POST(req: NextRequest) {
