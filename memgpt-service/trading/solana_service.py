@@ -60,18 +60,14 @@ class SolanaService:
             )
             
             # Try all possible signature locations with fallbacks
-            original_signature = (
-                wallet_info.get('signature') or  # Try top level first
-                wallet_info.get('credentials', {}).get('signature')  # Then credentials
-            )
-
-            session_signature = (
-                wallet_info.get('sessionSignature') or  # Try top level first
-                wallet_info.get('credentials', {}).get('sessionSignature') or  # Then credentials
-                original_signature  # Fall back to original signature if no session signature
+            signature = (
+                wallet_info.get('credentials', {}).get('signature') or  # First try credentials signature
+                wallet_info.get('signature') or  # Then try top level signature
+                wallet_info.get('sessionSignature') or  # Then try session signatures
+                wallet_info.get('credentials', {}).get('sessionSignature')
             )
             
-            logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(session_signature)}")
+            logging.info(f"Extracted credentials - Public Key: {public_key}, Signature Present: {bool(signature)}")
             
             if not public_key:
                 return {
@@ -81,7 +77,7 @@ class SolanaService:
                     'message': 'Public key is required for session initialization'
                 }
                     
-            if not session_signature:
+            if not signature:
                 # Generate session message and ask frontend to sign
                 session_message = f"Trading session initialization for {public_key} at {datetime.now().isoformat()}"
                 return {
@@ -94,18 +90,18 @@ class SolanaService:
             # Create new session ID
             session_id = str(uuid.uuid4())
                         
-            # Build complete initialization parameters with correct signature handling
+            # Build complete initialization parameters
             init_params = {
                 'wallet': {
                     'publicKey': public_key,
-                    'signature': original_signature,      # Keep original signature at top level
-                    'sessionId': session_id,             # You already have this!
-                    'sessionSignature': session_signature, # Add the session signature here
+                    'signature': signature,      # Keep original signature
+                    'sessionId': session_id,     # Add the session ID
+                    'sessionSignature': signature, # Use original signature as session signature
                     'credentials': {
                         'publicKey': public_key,
-                        'signature': original_signature,  # Keep original signature in credentials
-                        'sessionId': session_id,         # You already have this!
-                        'sessionSignature': session_signature,  # Add session signature in credentials too
+                        'signature': signature,  # Keep original signature
+                        'sessionId': session_id,  # Add the session ID
+                        'sessionSignature': signature,  # Use original signature as session signature
                         'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
                         'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
                         'connected': wallet_info.get('credentials', {}).get('connected', True)
@@ -115,17 +111,16 @@ class SolanaService:
                 
             logging.info(f"Initializing session with params: {init_params}")
             
-            # Store session in Supabase first - Fixed the query
+            # Store session in Supabase
             session_data = {
                 'public_key': public_key,
-                'signature': session_signature,
+                'signature': signature,
                 'session_id': session_id,
                 'expires_at': (datetime.now() + timedelta(days=1)).isoformat(),
                 'is_active': True,
                 'wallet_data': init_params['wallet']
             }
             
-            # Changed this part to remove .select()
             success, store_result = await safe_supabase_execute(
                 self.supabase.table('trading_sessions').insert(session_data),
                 error_message="Failed to store session"
@@ -143,7 +138,7 @@ class SolanaService:
             return {
                 'success': True,
                 'sessionId': session_id,
-                'signature': session_signature,
+                'signature': signature,
                 'publicKey': public_key,
                 'expiresAt': session_data['expires_at'],
                 'wallet': init_params['wallet']

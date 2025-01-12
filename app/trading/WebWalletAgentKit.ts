@@ -31,14 +31,18 @@ export class WebWalletAgentKit extends SolanaAgentKit {
    rpcUrl: string,
    config: ExtendedConfig
  ) {
-   const dummyPrivateKey = 'readonly'.repeat(8);
-   const dummyKeypair = Keypair.fromSeed(new Uint8Array(Buffer.from(dummyPrivateKey)));
-   
-   super(bs58.encode(dummyKeypair.secretKey), rpcUrl, config);
-   
-   this.webWallet = wallet;
-   this.extendedConfig = config;
- }
+    const dummyKey = new Uint8Array(32).fill(0);
+    dummyKey[0] = 1;  // Make sure it's not all zeros
+    const dummyKeypair = Keypair.fromSeed(dummyKey);
+    const dummyPrivateKeyBase58 = bs58.encode(dummyKeypair.secretKey.slice(0, 32)); // Only use first 32 bytes
+    
+    // Initialize with proper length dummy key
+    super(dummyPrivateKeyBase58, rpcUrl, config);
+    
+    this.webWallet = wallet;
+    this.extendedConfig = config;
+  }
+
 
  async signTransaction(tx: Transaction): Promise<Transaction> {
    const session = await this.validateSession();

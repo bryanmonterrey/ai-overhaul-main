@@ -150,7 +150,7 @@ class TradingChat:
             }
         
     async def process_admin_message(self, message: str, wallet_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Process admin chat messages"""
+        """Process admin chat messages with session handling"""
         print("Starting process_admin_message with:", message)
         try:
             # Use Claude to analyze the message
@@ -180,12 +180,49 @@ class TradingChat:
                 }
                 command_type = "trade"
 
-            # Add wallet info to parameters if provided
+            # Check for wallet info and signature
             if wallet_info:
-                print("Adding wallet info to parameters:", wallet_info)
+                print("Processing wallet info:", wallet_info)
+                
+                # Extract signature from all possible locations
+                signature = (
+                    wallet_info.get('signature') or
+                    wallet_info.get('credentials', {}).get('signature') or
+                    wallet_info.get('sessionSignature') or
+                    wallet_info.get('credentials', {}).get('sessionSignature')
+                )
+
+                # If no signature found and this is a trade command
+                if not signature and command_type == "trade":
+                    session_message = f"Trading session initialization for {wallet_info['publicKey']} at {datetime.now().isoformat()}"
+                    return {
+                        "response": "Please sign this message to initialize your trading session:",
+                        "session_message": session_message,
+                        "code": "NEEDS_SIGNATURE",
+                        "public_key": wallet_info.get('publicKey')
+                    }
+
+                # Prepare wallet info with signature structure
+                prepared_wallet = {
+                    'publicKey': wallet_info.get('publicKey'),
+                    'signature': signature,  # Add original signature
+                    'sessionId': wallet_info.get('sessionId'),
+                    'sessionSignature': signature,  # Use original signature as session signature
+                    'credentials': {
+                        'publicKey': wallet_info.get('publicKey'),
+                        'signature': signature,  # Keep original signature in credentials
+                        'sessionSignature': signature,  # Use original signature as session signature
+                        'sessionId': wallet_info.get('sessionId'),
+                        'signTransaction': wallet_info.get('credentials', {}).get('signTransaction', True),
+                        'signAllTransactions': wallet_info.get('credentials', {}).get('signAllTransactions', True),
+                        'connected': wallet_info.get('credentials', {}).get('connected', True)
+                    }
+                }
+
+                print("Adding prepared wallet info to parameters:", prepared_wallet)
                 analysis["parameters"] = {
                     **(analysis.get("parameters", {})),
-                    "wallet": wallet_info
+                    "wallet": prepared_wallet
                 }
 
             # Store trade parameters for future confirmation if this is a new trade
@@ -213,6 +250,16 @@ class TradingChat:
                 is_admin=True
             )
             print("Handler result:", result)
+
+            # Check for session-related responses
+            if isinstance(result, dict):
+                if result.get('error') == 'session_signature_required':
+                    return {
+                        "response": "Please sign this message to initialize your trading session:",
+                        "session_message": result.get('session_message'),
+                        "code": "NEEDS_SIGNATURE",
+                        "public_key": result.get('public_key')
+                    }
 
             return {
                 "response": analysis.get("natural_response", str(result)),
@@ -416,23 +463,22 @@ class TradingChat:
 
     async def execute_trade(self, params: dict) -> dict:
         try:
-            # Add debug logging
             logging.info(f"Execute trade called with params: {json.dumps(params, default=str)}")
             
-            # Format wallet info correctly
             wallet_info = params.get('wallet')
             if not wallet_info:
                 raise ValueError("No wallet info provided")
 
-            # Store original signature first
-            original_signature = (
+            # Extract signature and keep it separated from session
+            signature = (
                 wallet_info.get('credentials', {}).get('signature') or
                 wallet_info.get('signature')
             )
 
             logging.info(f"Got wallet info: {json.dumps(wallet_info, default=str)}")
+            logging.info(f"Found signature: {signature}")
 
-            # Initialize trading session first
+            # Initialize trading session
             session_result = await self.solana_service.init_trading_session(wallet_info)
             if not session_result.get('success'):
                 return {
@@ -441,40 +487,38 @@ class TradingChat:
                     'code': session_result.get('code', 'SESSION_INIT_ERROR')
                 }
                 
-            # Add session ID to wallet credentials while preserving original signature
             session_id = session_result.get('sessionId')
-            if session_id:
-                if not wallet_info.get('credentials'):
-                    wallet_info['credentials'] = {}
-                # Add session ID without modifying signature
-                wallet_info['credentials']['sessionId'] = session_id
-                wallet_info['credentials']['sessionSignature'] = original_signature  # Use original signature here
-                wallet_info['credentials']['signature'] = original_signature  # Keep original signature
+            
+            # Build wallet info with proper signature handling
+            wallet_with_session = {
+                'publicKey': wallet_info.get('publicKey'),
+                'signature': signature,              # Original signature
+                'sessionId': session_id,            # Session ID
+                'sessionSignature': signature,      # Use original signature for session signature
+                'credentials': {
+                    'publicKey': wallet_info.get('publicKey'),
+                    'signature': signature,          # Original signature in credentials
+                    'sessionId': session_id,         # Session ID in credentials
+                    'sessionSignature': signature,   # Use original signature for session signature
+                    'signTransaction': True,
+                    'signAllTransactions': True,
+                    'connected': True
+                }
+            }
 
-            # Format trading parameters with session info
+            # Format trade parameters
             trade_params = {
                 **params,
                 'wallet_address': wallet_info.get('publicKey'),
                 'original_amount': params.get('amount'),
-                'wallet': {
-                    'publicKey': wallet_info.get('publicKey'),
-                    'sessionId': session_id,  # Add session ID
-                    'signature': original_signature,  # Keep original signature
-                    'credentials': {
-                        'publicKey': wallet_info.get('publicKey'),
-                        'signature': original_signature,  # Keep original signature
-                        'sessionSignature': original_signature,  # Use original signature
-                        'sessionId': session_id,  # Add session ID separately
-                        'signTransaction': True,
-                        'signAllTransactions': True,
-                        'connected': True
-                    }
-                }
+                'wallet': wallet_with_session,
+                'sessionId': session_id,
+                'originalSignature': signature   # Keep track of original signature
             }
 
             logging.info(f"Starting trade execution with params: {json.dumps(trade_params, default=str)}")
             
-            # Execute trade through realtime monitor
+            # Execute trade
             if self.realtime_monitor:
                 logging.info("Executing admin trade through realtime monitor")
                 result = await self.realtime_monitor.execute_solana_trade(trade_params)
