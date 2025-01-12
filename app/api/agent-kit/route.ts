@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
                    params.inputMint,
                    params.outputMint,
                    params.amount
-               );
+               ); 
                return NextResponse.json(routes);
 
            case 'validateSession':
